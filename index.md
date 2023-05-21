@@ -1,6 +1,6 @@
 # Edward 笔记汇总
 ## 本人之前博客
-本人之前博客发布在博客园：https://www.cnblogs.com/Edwardlyz/articles/16712323.html
+本人之前博客发布在博客园：https://www.cnblogs.com/Edwardlyz
 
 ## 笔记内容索引：
 

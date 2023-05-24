@@ -4,4 +4,4 @@
 
 ## 笔记内容索引：
 
-1. UCAS——计算机图形学期末汇总：https://edward-lyz.github.io/CGExam.html
+1. 中国科学院大学 计算机图形学 期末真题、重点复习：https://edward-lyz.github.io/CGExam.html

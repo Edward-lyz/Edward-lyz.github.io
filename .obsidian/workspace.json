@@ -11,14 +11,12 @@
             "id": "ee05abaf7b4fc4f8",
             "type": "leaf",
             "state": {
-              "type": "markdown",
+              "type": "mk-space",
               "state": {
-                "file": "学习/引擎侧的指标衡量&服务测试.md",
-                "mode": "source",
-                "source": false
+                "path": "学习"
               },
               "icon": "lucide-file",
-              "title": "引擎侧的指标衡量&服务测试"
+              "title": "学习"
             }
           }
         ]
@@ -89,7 +87,7 @@
       }
     ],
     "direction": "horizontal",
-    "width": 331.5
+    "width": 326.5
   },
   "right": {
     "id": "f80a077de5181406",
@@ -105,7 +103,6 @@
             "state": {
               "type": "backlink",
               "state": {
-                "file": "学习/引擎侧的指标衡量&服务测试.md",
                 "collapseAll": false,
                 "extraContext": false,
                 "sortOrder": "alphabetical",
@@ -115,7 +112,7 @@
                 "unlinkedCollapsed": true
               },
               "icon": "links-coming-in",
-              "title": "引擎侧的指标衡量&服务测试 的反向链接列表"
+              "title": "反向链接"
             }
           },
           {
@@ -124,12 +121,11 @@
             "state": {
               "type": "outgoing-link",
               "state": {
-                "file": "学习/引擎侧的指标衡量&服务测试.md",
                 "linksCollapsed": false,
                 "unlinkedCollapsed": true
               },
               "icon": "links-going-out",
-              "title": "引擎侧的指标衡量&服务测试 的出链列表"
+              "title": "出链"
             }
           },
           {
@@ -167,13 +163,12 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "学习/引擎侧的指标衡量&服务测试.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
               },
               "icon": "lucide-list",
-              "title": "引擎侧的指标衡量&服务测试 的大纲"
+              "title": "大纲"
             }
           }
         ]
@@ -195,8 +190,11 @@
       "obsidian-importer:Open Importer": false
     }
   },
-  "active": "ee05abaf7b4fc4f8",
+  "active": "2ba8e2a15d50534e",
   "lastOpenFiles": [
+    "学习/【WIP】DeepGEMM 1d2d 初探.md",
+    "学习/CuTile学习—从 GEMM 开始.md",
+    "学习/引擎侧的指标衡量&服务测试.md",
     "学习/TileLang  SM100 GEMM 初探.md",
     "学习/FA4代码学习 (以 MLA-Prefill 为例).md",
     "Untitled.md",
@@ -209,9 +207,6 @@
     "工作/【WIP】算子测试经验.md",
     "工作/闪电模型 nsys-profiler.md",
     "工作/【WIP】工作价值.md",
-    "学习/【WIP】DeepGEMM 1d2d 初探.md",
-    "学习/CuTile学习—从 GEMM 开始.md",
-    "学习/引擎侧的指标衡量&服务测试.md",
     "图片/746a162d577a82306f64d362a27eb0b0.jpg",
     "图片",
     "Export-7935bbcb-4b08-4184-ac69-3746945b0c1c/工作.md",

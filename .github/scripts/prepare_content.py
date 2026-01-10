@@ -64,6 +64,19 @@ def convert_obsidian(content: str) -> str:
     return "".join(out)
 
 
+def needs_front_matter(content: str) -> bool:
+    if content.startswith("\ufeff"):
+        content = content.lstrip("\ufeff")
+    return not (content.startswith("---") or content.startswith("+++")
+                or content.startswith("{"))
+
+
+def add_front_matter(content: str, title: str) -> str:
+    safe_title = title.replace("\"", "\\\"")
+    front_matter = f"---\ntitle: \"{safe_title}\"\n---\n\n"
+    return front_matter + content.lstrip("\ufeff")
+
+
 def main() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     src_dir = repo_root / "学习"
@@ -87,6 +100,8 @@ def main() -> None:
         if path.suffix.lower() == ".md":
             text = path.read_text(encoding="utf-8")
             converted = convert_obsidian(text)
+            if needs_front_matter(converted):
+                converted = add_front_matter(converted, path.stem)
             target.write_text(converted, encoding="utf-8")
         else:
             shutil.copy2(path, target)

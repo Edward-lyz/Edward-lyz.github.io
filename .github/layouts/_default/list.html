@@ -1,0 +1,16 @@
+{{ define "main" }}
+  <section class="hero">
+    <h1 class="hero-title">{{ .Site.Title }}</h1>
+    {{ with .Site.Params.tagline }}
+      <p class="hero-subtitle">{{ . }}</p>
+    {{ end }}
+  </section>
+  <ul class="note-list">
+    {{ range .Site.RegularPages.ByTitle }}
+      <li class="note-item">
+        <a class="note-link" href="{{ .RelPermalink }}">{{ .Title }}</a>
+        <span class="note-meta">{{ .Lastmod.Format "2006-01-02" }}</span>
+      </li>
+    {{ end }}
+  </ul>
+{{ end }}

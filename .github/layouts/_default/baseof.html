@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="{{ .Site.Language.Lang | default "zh" }}">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ if .IsHome }}{{ .Site.Title }}{{ else }}{{ .Title }} · {{ .Site.Title }}{{ end }}</title>
+    {{ $css := resources.Get "css/site.css" | minify | fingerprint }}
+    <link rel="stylesheet" href="{{ $css.RelPermalink }}" integrity="{{ $css.Data.Integrity }}">
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="container">
+        <a class="site-title" href="{{ "/" | relURL }}">{{ .Site.Title }}</a>
+        {{ if not .IsHome }}
+          <a class="site-home" href="{{ "/" | relURL }}">All notes</a>
+        {{ end }}
+      </div>
+    </header>
+    <main class="site-main container">
+      {{ block "main" . }}{{ end }}
+    </main>
+    <footer class="site-footer">
+      <div class="container">
+        <span>Built with Hugo - {{ now.Format "2006" }}</span>
+      </div>
+    </footer>
+  </body>
+</html>

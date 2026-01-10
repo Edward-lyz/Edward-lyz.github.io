@@ -1,0 +1,27 @@
+baseURL = "https://edward-lyz.github.io/"
+languageCode = "zh-cn"
+title = "Notes"
+defaultContentLanguage = "zh"
+hasCJKLanguage = true
+
+contentDir = ".github/build-content"
+layoutDir = ".github/layouts"
+assetDir = ".github/assets"
+staticDir = "图片"
+
+canonifyURLs = true
+
+disableKinds = ["taxonomy", "term"]
+
+[taxonomies]
+
+[params]
+  tagline = "Learning notes"
+
+[markup]
+  [markup.goldmark]
+    [markup.goldmark.parser]
+      autoHeadingID = true
+      autoHeadingIDType = "github"
+  [markup.goldmark.renderer]
+      unsafe = false

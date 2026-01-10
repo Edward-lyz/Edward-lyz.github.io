@@ -1,0 +1,233 @@
+{
+  "main": {
+    "id": "59d52fda553c5468",
+    "type": "split",
+    "children": [
+      {
+        "id": "0bdace4bd82b9a87",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "ee05abaf7b4fc4f8",
+            "type": "leaf",
+            "state": {
+              "type": "mk-space",
+              "state": {
+                "path": "工作"
+              },
+              "icon": "lucide-file",
+              "title": "工作"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "55d02572fda71ec7",
+    "type": "split",
+    "children": [
+      {
+        "id": "6e63858deacd78ca",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "b43f3c849b105615",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false
+              },
+              "icon": "lucide-folder-closed",
+              "title": "文件列表"
+            }
+          },
+          {
+            "id": "9e5f23e6bca716cb",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "搜索"
+            }
+          },
+          {
+            "id": "cb3eeb56aaa380f9",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {},
+              "icon": "lucide-bookmark",
+              "title": "书签"
+            }
+          },
+          {
+            "id": "2ba8e2a15d50534e",
+            "type": "leaf",
+            "state": {
+              "type": "mk-path-view",
+              "state": {},
+              "icon": "layout-grid",
+              "title": "Navigator"
+            }
+          }
+        ],
+        "currentTab": 3
+      }
+    ],
+    "direction": "horizontal",
+    "width": 331.5
+  },
+  "right": {
+    "id": "f80a077de5181406",
+    "type": "split",
+    "children": [
+      {
+        "id": "71d9075f2ea7a2a2",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "b5ee364270e1cc8b",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "反向链接"
+            }
+          },
+          {
+            "id": "766251af6775ab7b",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "出链"
+            }
+          },
+          {
+            "id": "e029252335615b00",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "标签"
+            }
+          },
+          {
+            "id": "1d4a944652410d16",
+            "type": "leaf",
+            "state": {
+              "type": "all-properties",
+              "state": {
+                "sortOrder": "frequency",
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-archive",
+              "title": "添加笔记属性"
+            }
+          },
+          {
+            "id": "2806fc3c5693eb4d",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "大纲"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300,
+    "collapsed": true
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:打开快速切换": false,
+      "graph:查看关系图谱": false,
+      "canvas:新建白板": false,
+      "daily-notes:打开/创建今天的日记": false,
+      "templates:插入模板": false,
+      "command-palette:打开命令面板": false,
+      "bases:创建新数据库": false,
+      "obsidian-importer:Open Importer": false
+    }
+  },
+  "active": "ee05abaf7b4fc4f8",
+  "lastOpenFiles": [
+    "学习/TileLang  SM100 GEMM 初探.md",
+    "学习/FA4代码学习 (以 MLA-Prefill 为例).md",
+    "Untitled.md",
+    "学习/【WIP】mHC 融合算子初步分析.md",
+    "Tags",
+    "工作/Silu_and_mul_ep_index_quant_3d 算子优化初探.md",
+    "工作/GroupGEMM 最佳效率探索.md",
+    "工作/biased_group_topk 优化&学习.md",
+    "工作/AIAK_OP_Profiler 构建.md",
+    "工作/【WIP】算子测试经验.md",
+    "工作/闪电模型 nsys-profiler.md",
+    "工作/【WIP】工作价值.md",
+    "学习/【WIP】DeepGEMM 1d2d 初探.md",
+    "学习/CuTile学习—从 GEMM 开始.md",
+    "学习/引擎侧的指标衡量&服务测试.md",
+    "图片/746a162d577a82306f64d362a27eb0b0.jpg",
+    "图片",
+    "Export-7935bbcb-4b08-4184-ac69-3746945b0c1c/工作.md",
+    "Export-7935bbcb-4b08-4184-ac69-3746945b0c1c/People.md",
+    "Export-7935bbcb-4b08-4184-ac69-3746945b0c1c/People/李琰朕.md",
+    "图片/image 4 2.png",
+    "图片/image 3 2.png",
+    "图片/image 2 3.png",
+    "图片/image 1 2.png",
+    "图片/image 5.png",
+    "图片/FA4--pipeline.drawio.svg",
+    "图片/image 2 2.png",
+    "图片/image 1.png",
+    "图片/image 4.png",
+    "Export-7935bbcb-4b08-4184-ac69-3746945b0c1c/学习.md",
+    "Export-7935bbcb-4b08-4184-ac69-3746945b0c1c/People",
+    "学习",
+    "工作",
+    "Export-7935bbcb-4b08-4184-ac69-3746945b0c1c",
+    "images",
+    "工作.md",
+    "工作"
+  ]
+}

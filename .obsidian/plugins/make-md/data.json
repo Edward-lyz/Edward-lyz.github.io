@@ -39,7 +39,8 @@
   "deleteFileOption": "trash",
   "expandedSpaces": [
     "//Tags",
-    "/"
+    "/",
+    "//学习"
   ],
   "expandFolderOnClick": true,
   "spacesFolder": "Tags",
@@ -51,6 +52,8 @@
     "_assets",
     "_blocks"
   ],
+  "newFileLocation": "root",
+  "newFileFolderPath": "",
   "inlineBacklinks": false,
   "inlineContext": true,
   "inlineBacklinksExpanded": false,

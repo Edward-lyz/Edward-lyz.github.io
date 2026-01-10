@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 import re
 import shutil
+import subprocess
+from datetime import date
+from typing import Optional
 from pathlib import Path
 from urllib.parse import quote
 
@@ -8,6 +11,7 @@ IMG_RE = re.compile(r"!\[\[([^\]|]+)(?:\|([^\]]+))?\]\]")
 WIKI_RE = re.compile(r"\[\[([^\]]+)\]\]")
 HIGHLIGHT_RE = re.compile(r"(?<![=])==([^=\n]+?)==(?!=)")
 PUNCT_RE = re.compile(r"[\\/:*?\"<>|\[\]{}()!@#$%^&+=,.;'`~]")
+LEGACY_DATE = "2026-01-10"
 
 
 def anchorize(text: str) -> str:
@@ -71,10 +75,41 @@ def needs_front_matter(content: str) -> bool:
                 or content.startswith("{"))
 
 
-def add_front_matter(content: str, title: str) -> str:
+def add_front_matter(content: str, title: str, date_value: str) -> str:
     safe_title = title.replace("\"", "\\\"")
-    front_matter = f"---\ntitle: \"{safe_title}\"\n---\n\n"
+    front_matter = (
+        "---\n"
+        f"title: \"{safe_title}\"\n"
+        f"date: {date_value}\n"
+        f"lastmod: {date_value}\n"
+        "---\n\n"
+    )
     return front_matter + content.lstrip("\ufeff")
+
+
+def load_legacy_list(path: Path) -> set:
+    if not path.exists():
+        return set()
+    lines = (line.strip() for line in path.read_text(encoding="utf-8").splitlines())
+    return {line for line in lines if line}
+
+
+def git_commit_date(repo_root: Path, file_path: Path) -> Optional[str]:
+    rel_path = file_path.relative_to(repo_root)
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), "log", "-1", "--format=%cs", "--", str(rel_path)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        return None
+
+    if result.returncode != 0:
+        return None
+    output = result.stdout.strip()
+    return output or None
 
 
 def main() -> None:
@@ -89,6 +124,8 @@ def main() -> None:
         shutil.rmtree(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
 
+    legacy_list = load_legacy_list(repo_root / ".github" / "legacy_notes.txt")
+
     for path in src_dir.rglob("*"):
         rel = path.relative_to(src_dir)
         target = dest_dir / rel
@@ -101,7 +138,12 @@ def main() -> None:
             text = path.read_text(encoding="utf-8")
             converted = convert_obsidian(text)
             if needs_front_matter(converted):
-                converted = add_front_matter(converted, path.stem)
+                rel_key = path.relative_to(src_dir).as_posix()
+                if rel_key in legacy_list:
+                    date_value = LEGACY_DATE
+                else:
+                    date_value = git_commit_date(repo_root, path) or date.today().isoformat()
+                converted = add_front_matter(converted, path.stem, date_value)
             target.write_text(converted, encoding="utf-8")
         else:
             shutil.copy2(path, target)

@@ -11,12 +11,14 @@
             "id": "ee05abaf7b4fc4f8",
             "type": "leaf",
             "state": {
-              "type": "mk-space",
+              "type": "markdown",
               "state": {
-                "path": "工作"
+                "file": "学习/引擎侧的指标衡量&服务测试.md",
+                "mode": "source",
+                "source": false
               },
               "icon": "lucide-file",
-              "title": "工作"
+              "title": "引擎侧的指标衡量&服务测试"
             }
           }
         ]
@@ -103,6 +105,7 @@
             "state": {
               "type": "backlink",
               "state": {
+                "file": "学习/引擎侧的指标衡量&服务测试.md",
                 "collapseAll": false,
                 "extraContext": false,
                 "sortOrder": "alphabetical",
@@ -112,7 +115,7 @@
                 "unlinkedCollapsed": true
               },
               "icon": "links-coming-in",
-              "title": "反向链接"
+              "title": "引擎侧的指标衡量&服务测试 的反向链接列表"
             }
           },
           {
@@ -121,11 +124,12 @@
             "state": {
               "type": "outgoing-link",
               "state": {
+                "file": "学习/引擎侧的指标衡量&服务测试.md",
                 "linksCollapsed": false,
                 "unlinkedCollapsed": true
               },
               "icon": "links-going-out",
-              "title": "出链"
+              "title": "引擎侧的指标衡量&服务测试 的出链列表"
             }
           },
           {
@@ -163,12 +167,13 @@
             "state": {
               "type": "outline",
               "state": {
+                "file": "学习/引擎侧的指标衡量&服务测试.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
               },
               "icon": "lucide-list",
-              "title": "大纲"
+              "title": "引擎侧的指标衡量&服务测试 的大纲"
             }
           }
         ]

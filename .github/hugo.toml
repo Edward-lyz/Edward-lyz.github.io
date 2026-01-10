@@ -1,6 +1,6 @@
 baseURL = "https://edward-lyz.github.io/"
 languageCode = "zh-cn"
-title = "Notes"
+title = "lyz的博客"
 defaultContentLanguage = "zh"
 hasCJKLanguage = true
 
@@ -10,13 +10,14 @@ assetDir = ".github/assets"
 staticDir = "图片"
 
 canonifyURLs = true
+enableRobotsTXT = true
 
 disableKinds = ["taxonomy", "term"]
 
 [taxonomies]
 
 [params]
-  tagline = "Learning notes"
+  tagline = "无限进步"
 
 [markup]
   [markup.goldmark]

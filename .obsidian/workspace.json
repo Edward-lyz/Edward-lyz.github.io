@@ -75,7 +75,7 @@
             }
           },
           {
-            "id": "f02a8009a2f2e79e",
+            "id": "febb8684f4333064",
             "type": "leaf",
             "state": {
               "type": "mk-path-view",
@@ -193,11 +193,11 @@
       "obsidian-importer:Open Importer": false
     }
   },
-  "active": "ee05abaf7b4fc4f8",
+  "active": "febb8684f4333064",
   "lastOpenFiles": [
     "图片/attn0_dump_code.png",
     "学习/推理引擎的“蝴蝶效应” -- 从V32 模型的输出不一致说起.md",
-    "attn1_dump_code.png",
+    "图片/attn1_dump_code.png",
     "学习/引擎侧的指标衡量&服务测试.md",
     "学习/【WIP】mHC 融合算子分析&实现&调优.md",
     "学习/FA4代码学习 (以 MLA-Prefill 为例).md",

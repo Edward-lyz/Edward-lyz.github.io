@@ -56,49 +56,49 @@
 
 ## 3.2 单算子拆分
 
-|算子名拆分|nsys 具体执行时间|
-|---|---|---|
-|**atten 耗时 (1～3 层)**|—|—|
-||RMS Norm|8 us|
-||q_a_kv_a|11 us|
-||RMS_Norm_Split_Col|4 us|
-||q_proj_b|2 + 14 = 16 us|
-||bmm|8 + 2 = 10 us|
-||rope|7 + 2 + 5 = 15 us|
-||atten|153 us|
-||bmm|6 + 5 = 11 us|
-||o_proj|3 + 30 = 33 us|
-||Fused_Add_RMS_norm|3|
-|**mlp 耗时**|mlp_clomn_gemm （UP）|2+22 = 24 us|
-||silu|5 us|
-||mlp_row_gemm （Down）|18 us|
-|一层共计耗时|Dense_Total|0.311 ms|
-|三层共计耗时|Dense_Total * 3|0.311 * 3 = 0.933 ms|
-|atten 耗时(4~61 层)|—|—|
-||Fused_Add_RMS_norm|4 us|
-||q_a_kv_a|11 us|
-||RMS_Split_Col|4 us|
-||q_proj_b|2 + 14 = 16 us (+per_token_quant)|
-||bmm|7 + 3 = 10 us (+ elementwise)|
-||rope|7 + 2 + 5 = 14 us (+ elementwise)|
-||atten|150 us|
-||bmm|6 + 4 = 10us|
-||o_proj|3 + 29 = 32 us|
-||Fused_Add_RMS_Norm|3 us|
-|路由层|gate+topk|19 us|
-|share 专家|up_gemm|3 + 12 = 15 us|
-||silu|2 us|
-||down_gemm|6 us|
-|MoE 层|dispatch|43 us （未掩盖部分）|
-||up_gemm|40 us|
-||silu|2 + 4 = 6 us|
-||down_gemm|30 us|
-||combine|12 us （未掩盖部分）|
-|后处理|combine + element|8 + 2 + 2 = 12 us|
-|一层耗时|MoE_Total|0.439 ms|
-|58 层耗时|MoE_Total * 58|25.46 ms|
-|投机解码耗时|MTP_Total|2 ms|
-|3 个 token 的生成耗时 (考虑到 MTP 实际接受率，为2.3个 token|Dense_Total * 3 + MoE_Total * 58 + MTP_Total|28.5 ms|
+| 算子名拆分                                      | nsys 具体执行时间                                  |                                   |
+| ------------------------------------------ | -------------------------------------------- | --------------------------------- |
+| **atten 耗时 (1～3 层)**                       | —                                            | —                                 |
+|                                            | RMS Norm                                     | 8 us                              |
+|                                            | q_a_kv_a                                     | 11 us                             |
+|                                            | RMS_Norm_Split_Col                           | 4 us                              |
+|                                            | q_proj_b                                     | 2 + 14 = 16 us                    |
+|                                            | bmm                                          | 8 + 2 = 10 us                     |
+|                                            | rope                                         | 7 + 2 + 5 = 15 us                 |
+|                                            | atten                                        | 153 us                            |
+|                                            | bmm                                          | 6 + 5 = 11 us                     |
+|                                            | o_proj                                       | 3 + 30 = 33 us                    |
+|                                            | Fused_Add_RMS_norm                           | 3                                 |
+| **mlp 耗时**                                 | mlp_clomn_gemm （UP）                          | 2+22 = 24 us                      |
+|                                            | silu                                         | 5 us                              |
+|                                            | mlp_row_gemm （Down）                          | 18 us                             |
+| 一层共计耗时                                     | Dense_Total                                  | 0.311 ms                          |
+| 三层共计耗时                                     | Dense_Total * 3                              | 0.311 * 3 = 0.933 ms              |
+| atten 耗时(4~61 层)                           | —                                            | —                                 |
+|                                            | Fused_Add_RMS_norm                           | 4 us                              |
+|                                            | q_a_kv_a                                     | 11 us                             |
+|                                            | RMS_Split_Col                                | 4 us                              |
+|                                            | q_proj_b                                     | 2 + 14 = 16 us (+per_token_quant) |
+|                                            | bmm                                          | 7 + 3 = 10 us (+ elementwise)     |
+|                                            | rope                                         | 7 + 2 + 5 = 14 us (+ elementwise) |
+|                                            | atten                                        | 150 us                            |
+|                                            | bmm                                          | 6 + 4 = 10us                      |
+|                                            | o_proj                                       | 3 + 29 = 32 us                    |
+|                                            | Fused_Add_RMS_Norm                           | 3 us                              |
+| 路由层                                        | gate+topk                                    | 19 us                             |
+| share 专家                                   | up_gemm                                      | 3 + 12 = 15 us                    |
+|                                            | silu                                         | 2 us                              |
+|                                            | down_gemm                                    | 6 us                              |
+| MoE 层                                      | dispatch                                     | 43 us （未掩盖部分）                     |
+|                                            | up_gemm                                      | 40 us                             |
+|                                            | silu                                         | 2 + 4 = 6 us                      |
+|                                            | down_gemm                                    | 30 us                             |
+|                                            | combine                                      | 12 us （未掩盖部分）                     |
+| 后处理                                        | combine + element                            | 8 + 2 + 2 = 12 us                 |
+| 一层耗时                                       | MoE_Total                                    | 0.439 ms                          |
+| 58 层耗时                                     | MoE_Total * 58                               | 25.46 ms                          |
+| 投机解码耗时                                     | MTP_Total                                    | 2 ms                              |
+| 3 个 token 的生成耗时 (考虑到 MTP 实际接受率，为2.3个 token | Dense_Total * 3 + MoE_Total * 58 + MTP_Total | 28.5 ms                           |
 
 # 4. 模拟器模拟
 

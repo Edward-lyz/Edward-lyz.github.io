@@ -75,7 +75,7 @@
             }
           },
           {
-            "id": "febb8684f4333064",
+            "id": "2decd426eba3c2f6",
             "type": "leaf",
             "state": {
               "type": "mk-path-view",
@@ -89,7 +89,7 @@
       }
     ],
     "direction": "horizontal",
-    "width": 326.5
+    "width": 305.5
   },
   "right": {
     "id": "f80a077de5181406",
@@ -181,7 +181,7 @@
       }
     ],
     "direction": "horizontal",
-    "width": 295.5
+    "width": 275.5
   },
   "left-ribbon": {
     "hiddenItems": {
@@ -193,18 +193,24 @@
       "obsidian-importer:Open Importer": false
     }
   },
-  "active": "febb8684f4333064",
+  "active": "ee05abaf7b4fc4f8",
   "lastOpenFiles": [
-    "图片/attn0_dump_code.png",
+    "资源/test_attn_mqa_determinism.py",
+    "资源/diff_safetensors.py",
+    "资源/Pasted image 20260120162021.png",
     "学习/推理引擎的“蝴蝶效应” -- 从V32 模型的输出不一致说起.md",
-    "图片/attn1_dump_code.png",
-    "学习/引擎侧的指标衡量&服务测试.md",
-    "学习/【WIP】mHC 融合算子分析&实现&调优.md",
+    "资源/Pasted image 20260120160454.png",
+    "Pasted image 20260120160645.png",
+    "学习/【WIP】mHC 算法分析 & 算子实现.md",
     "学习/FA4代码学习 (以 MLA-Prefill 为例).md",
-    "图片/逐层误差区间对比直方图.png",
-    "图片/kvcache_sorted_compare.png",
-    "图片/attn1_layer_0_compare.png",
-    "图片/attn0_layer_0_compare.png",
+    "学习/TOPK 算子改进优化 -- 稳定排序.md",
+    "资源/attn0_dump_code.png",
+    "资源/attn1_dump_code.png",
+    "学习/引擎侧的指标衡量&服务测试.md",
+    "资源/逐层误差区间对比直方图.png",
+    "资源/kvcache_sorted_compare.png",
+    "资源/attn1_layer_0_compare.png",
+    "资源/attn0_layer_0_compare.png",
     "学习/CuTile学习—从 GEMM 开始.md",
     "工作/闪电模型 nsys-profiler.md",
     "Tags",
@@ -219,14 +225,11 @@
     "工作/biased_group_topk 优化&学习.md",
     "工作/AIAK_OP_Profiler 构建.md",
     "工作/【WIP】算子测试经验.md",
-    "图片/746a162d577a82306f64d362a27eb0b0.jpg",
-    "图片",
+    "资源/746a162d577a82306f64d362a27eb0b0.jpg",
+    "资源",
     "Export-7935bbcb-4b08-4184-ac69-3746945b0c1c/工作.md",
     "Export-7935bbcb-4b08-4184-ac69-3746945b0c1c/People.md",
     "Export-7935bbcb-4b08-4184-ac69-3746945b0c1c/People/李琰朕.md",
-    "图片/image 4 2.png",
-    "图片/image 3 2.png",
-    "图片/image 2 3.png",
     "Export-7935bbcb-4b08-4184-ac69-3746945b0c1c/学习.md",
     "Export-7935bbcb-4b08-4184-ac69-3746945b0c1c/People",
     "学习",

@@ -288,7 +288,7 @@ mat = ct.reshape(mat, (total,))
 mat = ct.astype(mat, Y.dtype)
 ct.scatter(Y, (row, offsets), mat, latency=1)
 ```
-## 4.4 融合apply 这一步的计算
+## 4.4 融合apply 
 ```Python
 @ct.kernel
 def mhc_apply_residual_kernel(
@@ -365,16 +365,123 @@ mhc-gemm-rmsnorm-performance-float8_e4m3fn-TFLOPS:
 ```
 综合来看，总共四个融合算子，其中`mhc-scale-bias-sigmoid`这个算子表现符合预期，耗时 `7.5 us`，可以给到优秀，性能能和 CUDA 手搓基本持平；`mhc_apply_residual` 算子不尽人意，耗时过长，从实现的带宽上也能看出性能，可以给到差评；`mhc_sinkhorn` 算子也如此，不过是 20 次的归一化迭代而已，实际耗时 87us，给到下等实现的评价；至于计算的重头戏，`gemm-rms` 算子，由于任务分配还是按照切分输出来划分，在 N 很小而 K 很大时，实际就会比较吃亏，性能严重受损。耗时几乎是不可接受的。
 # 5. 性能优化思路
-## 5.1 gemm-rms优化思路
-- [x] 切换成 split-k 算法
-- [x] B 矩阵不转置
-- [x] swizzle 任务映射
-- [x] 实际表现：63us
-## 5.2 scale 放入 gemm-rms 的后处理
-- [x] 把 scale 的计算放入到上一个 splitk 计算 gemm 和 rms 的reduce 处理之后，融合进一个算子后，避免多次读取，可以直接寄存器获得rms 的值，掩盖掉一次写和一次读
-- [x] 实际表现：21us
-综合上述两个算子耗时：84us 处理完 gemm+rmsnorm+scale；如果不融合，采用 deepgemm 的 gemm + flashinfer 的 rmsnorm + 融合 scale：耗时为：67+36+8=111us，我们的融合算子超过了拼接多个算子的表现。
-- [ ] FP8 的精度问题+scale 待解决
-## 5.3 sinkhorn算子的优化
-## 5.4 apply 算子的优化
+在论文/代码的典型设定里：
+- `n=4`
+- `M = Batch × SeqLen = 8192`
+- `C=7168`，所以 `K=nC=28672`
+- `N=n^2+2n=24`（只有 24 个输出通道）
+
+也就是说：`K` 很大、`N` 极小，而且后续的 `Sinkhorn / apply` 都是“小矩阵 + 大吞吐”的典型组合。为了避免性能受限，我们应该避免：
+1) 并行度不够（`GEMM` 只开得出很少的 CTA）
+2) 中间结果落地导致的额外带宽（`gather/scatter`、多次读写 `X/Y`）
+下面所有优化，基本都围绕这两个点做取舍。
+
+## 5.1 `gemm-rms`：针对 `N` 极小的 GEMM 重新做并行度
+**问题来源**
+- `N=24` 导致沿 `N` 维能切出来的 tile 非常少（`TILE_SIZE_N` 再小也就 1~2 个 tile）
+- `K=28672` 又很大，单个 CTA 的工作量很重，但 CTA 数量很少 → SM 吃不满
+
+**优化思路**
+- [x] 切换成 split-K 算法：把并行度从 `M×N` 拓展到 `M×N×SPLIT_K`，每个 CTA 只算一段 `K`，最后再做一次归并
+- [x] host 侧传入 `w_nt`（`N×K`）避免“在线转置”：kernel 内只做 tile 级别的寄存器转置，避免全量转置/非连续读
+- [x] swizzle 任务映射：用 `_compute_bid(..., GROUP_SIZE_M)` 改写 `tile_id → (bid_m, bid_n)` 的映射，减少 L2 partition camping（同一时刻过多 CTA 打到相邻地址）
+- [x] 去除 warp-divergency：避免在 Kernel 里写if-else
+
+**对应实现**
+- `mhc_split_gemm_rms_kernel`：`grid = (ceil(M/TILE_M)*ceil(N/TILE_N), SPLIT_K, 1)`，`ct.bid(1)` 作为 `bid_k` 决定本 CTA 负责的 `K` 段
+- 写回策略：把 split-K 的 partial 写到 `Y_acc/R_acc`，后续再归并（这是 split-K 不可避免的代价）
+
+**效果**
+- 单论开头的 gemm+rms计算，耗时约为 `100us`。
+- 对比 DeepGeem：相同的shape 下，Deepgemm 的实现中，同样使用 split-k 算法加速计算，其实现耗时为 `90us`。
+```Shell
+[bench] mhc_split_gemm_rms_kernel M=8192 dtype=torch.bfloat16 ms=0.1010 
+[bench] deepgemm.tf32_hc_prenorm_gemm M=8192 dtype=torch.bfloat16 num_splits=2 ms=0.0897
+[bench] mhc_gemm_rms_scale M=8192 backend=cutile dtype=torch.bfloat16 ms=0.1171
+[bench] mhc_gemm_rms_scale M=8192 backend=torch dtype=torch.bfloat16 ms=1.2159
+mhc-gemm-rms-scale-performance-bfloat16-TFLOPS:
+        M      CuTile     Torch
+0  8192.0  100.268745  9.659018
+```
+- 综合来看，可以说耗时基本接近，实现了DeepGemm 的 90% 的性能
+## 5.2 把 scale/bias/sigmoid 融进 split-K 的 finalize（减少一次全量读写）
+
+这一步的直觉是：split-K 本来就需要一个 finalize kernel 把 `Y_acc/R_acc` 归并成最终 `Y/R`，那么把下面这些“逐元素后处理”塞进去，收益很稳定：
+- `/ r`（RMSNorm 的 `r` 已经在 finalize 里算出来了）
+- `alpha`、`bias`
+- `sigmoid / 2*sigmoid`（只作用在 `pre/post` 的前 `2n` 个通道）
+
+**对应实现**
+- `mhc_finalize_scale_bias_sigmoid_kernel`：先 `for split_idx in range(SPLIT_K)` 归并 `y_accum/r_accum`，再在同一个 kernel 里完成 scale/bias/sigmoid 并写回 `Y`
+- 用 `mask_pre/mask_post/mask_res` 对 3 段系数做分段处理（避免分 3 个 kernel）
+
+**效果**
+- 在上面的 bench 结果中，可以看到，split+finalize 两个 Kernel 耗时 `117 us` , 而单独的 split 算子耗时 `100 us`，因此可知，这里的 finalize 算子耗时为 `17us`
+
+## 5.3 sinkhorn：把 `n×n` 当成寄存器里的小矩阵来算
+`n=4` 时 `n×n=16`，对每个 sample 而言数据量极小，真正的瓶颈反而是：
+- 多次 kernel launch（行归一化/列归一化拆开会非常亏）
+- `gather/scatter` 带来的非连续访问和额外指令
+
+**优化思路**
+- [x] 避免使用 `gather/scatter`：把 residual block 视作连续的 16 个元素，直接 `load → reshape → store`
+- [x] 使用 `exp2` 快速近似 `exp`：`exp(x) = exp2(x * log2(e))`，通常在 GPU 上更友好
+
+**对应实现**
+```Python
+mat = ct.load(Y, index=(row, 0), shape=(1, total))
+mat = ct.reshape(mat, (n, n))
+mat = ct.astype(mat, ct.float32)
+mat = ct.exp2(mat * LOG2E)
+for _ in range(20):
+    mat = mat / ct.sum(mat, axis=1, keepdims=True)
+    mat = mat / ct.sum(mat, axis=0, keepdims=True)
+```
+
+**效果**
+- 见 5.5：`mhc_sinkhorn` 在这组配置下是 `0.0262ms`（≈`26us`）。
+
+## 5.4 apply：明确是带宽问题，用“连续 load + 向量 FMA”把中间态压扁
+apply 阶段的数学很简单：
+- `X_res = H_res · X`
+- `X_post = H_post ⊙ F_out`
+- `Out = X_res + X_post`
+
+但 `X/Out` 都是 `[B, n, C]` 的大张量，真正的优化目标是：
+> [!important]
+> 让 `X` 只被连续读取一次，让 `Out` 只被连续写一次；不要让 `H_post/H_res` 的访问打断吞吐。
+
+**优化抓手**
+- [x] 手写 FMA，不用 MMA：`n=4` 时 `4×4` 的 mixing 太小，走 `mma` 只会引入额外搬运/对齐成本；直接做 `acc += h * x` 更划算
+- [x] 避免 `gather/scatter`：把 `y_post/y_res` 先 `narrow/view` 成 `[B, n]` 和 `[B, n, n]`，kernel 内直接 `ct.load` 连续块
+- [x] 沿 `C` 做分块（`TILE_SIZE_C`）：每个 CTA 负责 `[n, TILE_SIZE_C]` 的输出 tile，让访问模式尽量全是连续向量 load/store
+
+**对应实现**
+- `mhc_apply_residual`：把外部 `[B, nC]` view 成 `[B, n, C]`，并提前切出 `y_post/y_res`
+- `mhc_apply_residual_kernel`：先把 `h_post/h_res` 一次性 load 到寄存器，再遍历 `j in range(n)` 连续读取 `X[row, j, c_tile]`
+
+**效果**
+- 见 5.5：`mhc_apply_residual` 在这组配置下是 `0.1610ms`（≈`161us`）。
+
+## 5.5 benchmark
+注：这里的 benchmark 配置以 `bench_mhc.py` 为准（`x` 为 `bfloat16`，部分权重/中间量为 `float32`），与前文的 FP8 基准不完全一致；主要用于验证优化方向与数量级。
+```Shell
+[bench] mhc_split_gemm_rms_kernel M=8192 dtype=torch.bfloat16 ms=0.1010 cfg=(m=128, n=32, k=128, split_k=2, group_size_m=8)
+[bench] deepgemm.tf32_hc_prenorm_gemm M=8192 dtype=torch.bfloat16 num_splits=2 ms=0.0897
+[bench] mhc_gemm_rms_scale M=8192 backend=cutile dtype=torch.bfloat16 ms=0.1171
+[bench] mhc_gemm_rms_scale M=8192 backend=torch dtype=torch.bfloat16 ms=1.2159
+mhc-gemm-rms-scale-performance-bfloat16-TFLOPS:
+        M      CuTile     Torch
+0  8192.0  100.268745  9.659018
+[bench] mhc_sinkhorn M=8192 backend=cutile dtype=torch.bfloat16 ms=0.0262
+[bench] mhc_sinkhorn M=8192 backend=torch dtype=torch.bfloat16 ms=0.1988
+mhc-sinkhorn-performance-bfloat16-GBps:
+        M     CuTile     Torch
+0  8192.0  40.001384  5.275819
+[bench] mhc_apply_residual M=8192 backend=cutile dtype=torch.bfloat16 ms=0.1595
+[bench] mhc_apply_residual M=8192 backend=torch dtype=torch.bfloat16 ms=3.1293
+mhc-apply-residual-performance-bfloat16-GBps:
+        M       CuTile       Torch
+0  8192.0  6627.235525  337.890399
+```
 

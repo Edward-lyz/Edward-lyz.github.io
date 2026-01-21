@@ -11,14 +11,12 @@
             "id": "ee05abaf7b4fc4f8",
             "type": "leaf",
             "state": {
-              "type": "markdown",
+              "type": "mk-space",
               "state": {
-                "file": "学习/mHC 算法分析 & 算子实现.md",
-                "mode": "source",
-                "source": false
+                "path": "公开"
               },
               "icon": "lucide-file",
-              "title": "mHC 算法分析 & 算子实现"
+              "title": "公开"
             }
           }
         ]
@@ -75,7 +73,7 @@
             }
           },
           {
-            "id": "2decd426eba3c2f6",
+            "id": "ee0e7df27869f256",
             "type": "leaf",
             "state": {
               "type": "mk-path-view",
@@ -167,13 +165,13 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "学习/mHC 算法分析 & 算子实现.md",
+                "file": "公开/公开.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
               },
               "icon": "lucide-list",
-              "title": "mHC 算法分析 & 算子实现 的大纲"
+              "title": "公开 的大纲"
             }
           }
         ],
@@ -193,38 +191,40 @@
       "obsidian-importer:Open Importer": false
     }
   },
-  "active": "ee05abaf7b4fc4f8",
+  "active": "b0f81abbe0b178ee",
   "lastOpenFiles": [
-    "学习/推理引擎的“蝴蝶效应” -- 从V32 模型的输出不一致说起.md",
+    "私人/私人.md",
+    "私人/闪电模型 nsys-profiler.md",
+    "私人/AIAK_OP_Profiler 构建.md",
+    "私人/Silu_and_mul_ep_index_quant_3d 算子优化初探.md",
+    "私人/biased_group_topk 优化&学习.md",
+    "公开/公开.md",
+    "GroupGEMM 最佳效率探索.md",
+    "私人/【WIP】DeepGEMM 1d2d 初探.md",
+    "公开/mHC 算法分析 & 算子实现.md",
+    "公开/推理引擎的“蝴蝶效应” -- 从V32 模型的输出不一致说起.md",
     "资源/test_attn_mqa_determinism.py",
     "资源/diff_safetensors.py",
     "资源/Pasted image 20260120162021.png",
     "资源/Pasted image 20260120160454.png",
     "Pasted image 20260120160645.png",
-    "学习/mHC 算法分析 & 算子实现.md",
-    "学习/FA4代码学习 (以 MLA-Prefill 为例).md",
-    "学习/TOPK 算子改进优化 -- 稳定排序.md",
+    "公开/FA4代码学习 (以 MLA-Prefill 为例).md",
+    "公开/TOPK 算子改进优化 -- 稳定排序.md",
     "资源/attn0_dump_code.png",
     "资源/attn1_dump_code.png",
-    "学习/引擎侧的指标衡量&服务测试.md",
+    "公开/引擎侧的指标衡量&服务测试.md",
     "资源/逐层误差区间对比直方图.png",
     "资源/kvcache_sorted_compare.png",
     "资源/attn1_layer_0_compare.png",
     "资源/attn0_layer_0_compare.png",
-    "学习/CuTile学习—从 GEMM 开始.md",
-    "工作/闪电模型 nsys-profiler.md",
+    "公开/CuTile学习—从 GEMM 开始.md",
     "Tags",
-    "工作/【WIP】模拟器优化.md",
-    "工作/【WIP】工作价值.md",
+    "私人/【WIP】模拟器优化.md",
+    "私人/【WIP】工作价值.md",
     "Vault.md",
-    "学习/【WIP】DeepGEMM 1d2d 初探.md",
-    "学习/TileLang  SM100 GEMM 初探.md",
+    "公开/TileLang  SM100 GEMM 初探.md",
     "Untitled.md",
-    "工作/Silu_and_mul_ep_index_quant_3d 算子优化初探.md",
-    "工作/GroupGEMM 最佳效率探索.md",
-    "工作/biased_group_topk 优化&学习.md",
-    "工作/AIAK_OP_Profiler 构建.md",
-    "工作/【WIP】算子测试经验.md",
+    "私人/【WIP】算子测试经验.md",
     "资源/746a162d577a82306f64d362a27eb0b0.jpg",
     "资源",
     "Export-7935bbcb-4b08-4184-ac69-3746945b0c1c/工作.md",
@@ -232,11 +232,11 @@
     "Export-7935bbcb-4b08-4184-ac69-3746945b0c1c/People/李琰朕.md",
     "Export-7935bbcb-4b08-4184-ac69-3746945b0c1c/学习.md",
     "Export-7935bbcb-4b08-4184-ac69-3746945b0c1c/People",
-    "学习",
-    "工作",
+    "公开",
+    "私人",
     "Export-7935bbcb-4b08-4184-ac69-3746945b0c1c",
     "images",
     "工作.md",
-    "工作"
+    "私人"
   ]
 }

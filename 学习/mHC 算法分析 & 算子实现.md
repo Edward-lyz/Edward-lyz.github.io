@@ -364,7 +364,8 @@ mhc-gemm-rmsnorm-performance-float8_e4m3fn-TFLOPS:
 0  8192.0  17.973055
 ```
 综合来看，总共四个融合算子，其中`mhc-scale-bias-sigmoid`这个算子表现符合预期，耗时 `7.5 us`，可以给到优秀，性能能和 CUDA 手搓基本持平；`mhc_apply_residual` 算子不尽人意，耗时过长，从实现的带宽上也能看出性能，可以给到差评；`mhc_sinkhorn` 算子也如此，不过是 20 次的归一化迭代而已，实际耗时 87us，给到下等实现的评价；至于计算的重头戏，`gemm-rms` 算子，由于任务分配还是按照切分输出来划分，在 N 很小而 K 很大时，实际就会比较吃亏，性能严重受损。耗时几乎是不可接受的。
-# 5. 性能优化思路
+# 5. 性能优化
+
 在论文/代码的典型设定里：
 - `n=4`
 - `M = Batch × SeqLen = 8192`
@@ -374,7 +375,21 @@ mhc-gemm-rmsnorm-performance-float8_e4m3fn-TFLOPS:
 也就是说：`K` 很大、`N` 极小，而且后续的 `Sinkhorn / apply` 都是“小矩阵 + 大吞吐”的典型组合。为了避免性能受限，我们应该避免：
 1) 并行度不够（`GEMM` 只开得出很少的 CTA）
 2) 中间结果落地导致的额外带宽（`gather/scatter`、多次读写 `X/Y`）
-下面所有优化，基本都围绕这两个点做取舍。
+下面所有优化，基本都围绕这两个点做取舍。这里先放出我们的优化后的 bench 性能数据（X 是 BF16，W 是 TF32，其余输入是 FP32 格式），以贴近真实的模型使用情况。
+```Shell
+mhc-split-gemm-rms-performance-bfloat16-GBps:
+        M      CuTile     PyTorch     DeepGemm
+0  8192.0  5061.57394  313.423308  5064.876475
+mhc-gemm-rms-scale-performance-bfloat16-GBps:
+        M       CuTile     PyTorch
+0  8192.0  4513.131525  388.723762
+mhc-sinkhorn-performance-bfloat16-GBps:
+        M     CuTile   PyTorch
+0  8192.0  19.152307  2.584275
+mhc-apply-residual-performance-bfloat16-GBps:
+        M       CuTile     PyTorch
+0  8192.0  6602.945269  337.325322
+```
 
 ## 5.1 `gemm-rms`：针对 `N` 极小的 GEMM 重新做并行度
 **问题来源**
@@ -388,22 +403,71 @@ mhc-gemm-rmsnorm-performance-float8_e4m3fn-TFLOPS:
 - [x] 去除 warp-divergency：避免在 Kernel 里写if-else
 
 **对应实现**
-- `mhc_split_gemm_rms_kernel`：`grid = (ceil(M/TILE_M)*ceil(N/TILE_N), SPLIT_K, 1)`，`ct.bid(1)` 作为 `bid_k` 决定本 CTA 负责的 `K` 段
-- 写回策略：把 split-K 的 partial 写到 `Y_acc/R_acc`，后续再归并（这是 split-K 不可避免的代价）
+```Python
+def mhc_split_gemm_rms_kernel(
+    X,
+    W,
+    Y_acc,
+    R_acc,
+    M: int,
+    N: int,
+    K: int,
+    TILE_SIZE_M: ConstInt,
+    TILE_SIZE_N: ConstInt,
+    TILE_SIZE_K: ConstInt,
+    SPLIT_K: ConstInt,
+    GROUP_SIZE_M: ConstInt,
+):
+    """Split-K fused GEMM + RMS compute kernel for mHC.
+    Key optimization: All blocks compute RMS to avoid wasting registers.
+    Each block computes partial RMS for its K-tile range, which are later
+    summed in the finalize kernel.
+    """
+    tile_id = ct.bid(0)
+    bid_k = ct.bid(1)
+    zero_pad = ct.PaddingMode.ZERO
+    num_bid_m = ct.cdiv(M, TILE_SIZE_M)
+    num_bid_n = ct.cdiv(N, TILE_SIZE_N)
+    num_bid_in_group = GROUP_SIZE_M * num_bid_n
+    bid_m, bid_n = _compute_bid(tile_id, num_bid_in_group, num_bid_m, GROUP_SIZE_M)
+    k_tiles = ct.cdiv(K, TILE_SIZE_K)
+    k_tiles_per_split = ct.cdiv(k_tiles, SPLIT_K)
+    k_tile_start = bid_k * k_tiles_per_split
+    k_tile_end = ct.minimum(k_tile_start + k_tiles_per_split, k_tiles)
+    rms_acc = ct.full((TILE_SIZE_M,), 0.0, dtype=ct.float32)
+    accumulator = ct.full((TILE_SIZE_M, TILE_SIZE_N), 0.0, dtype=ct.float32)
+    mma_dtype = ct.tfloat32 if (X.dtype == ct.float32 or W.dtype == ct.float32) else X.dtype
+    for k_tile in range(k_tile_start, k_tile_end):
+        a = ct.load(
+            X,
+            index=(bid_m, k_tile),
+            shape=(TILE_SIZE_M, TILE_SIZE_K),
+            padding_mode=zero_pad,
+            allow_tma=True,
+        )
+        b = ct.load(
+            W,
+            index=(k_tile, bid_n),
+            shape=(TILE_SIZE_K, TILE_SIZE_N),
+            padding_mode=zero_pad,
+            allow_tma=True,
+        )
+        a_mma = ct.astype(a, mma_dtype)
+        b_mma = ct.astype(b, mma_dtype)
+        accumulator = ct.mma(a_mma, b_mma, acc=accumulator)
+        a_fp32 = ct.astype(a, ct.float32)
+        rms_acc = rms_acc + ct.sum(a_fp32 * a_fp32, axis=1, keepdims=False)
+    bid_m_k = bid_m + bid_k * num_bid_m
+    ct.store(Y_acc, index=(bid_m_k, bid_n), tile=accumulator)
+    # Store RMS partial results - will be summed across bid_n in finalize kernel
+    # Using bid_n as additional dimension for partial sums
+    ct.store(R_acc, index=(bid_m_k, bid_n), tile=ct.reshape(rms_acc, (TILE_SIZE_M, 1)))
+```
 
 **效果**
-- 单论开头的 gemm+rms计算，耗时约为 `100us`。
+- 单论开头的 gemm+rms计算，耗时约为 `90us`。
 - 对比 DeepGeem：相同的shape 下，Deepgemm 的实现中，同样使用 split-k 算法加速计算，其实现耗时为 `90us`。
-```Shell
-[bench] mhc_split_gemm_rms_kernel M=8192 dtype=torch.bfloat16 ms=0.1010 
-[bench] deepgemm.tf32_hc_prenorm_gemm M=8192 dtype=torch.bfloat16 num_splits=2 ms=0.0897
-[bench] mhc_gemm_rms_scale M=8192 backend=cutile dtype=torch.bfloat16 ms=0.1171
-[bench] mhc_gemm_rms_scale M=8192 backend=torch dtype=torch.bfloat16 ms=1.2159
-mhc-gemm-rms-scale-performance-bfloat16-TFLOPS:
-        M      CuTile     Torch
-0  8192.0  100.268745  9.659018
-```
-- 综合来看，可以说耗时基本接近，实现了DeepGemm 的 90% 的性能
+- 综合来看，可以说耗时基本接近，和 deepgemm 的实现基本持平，用很少的高级语言+一部分的高性能 Kernel 优化思想即可追平同样的耗时和同样的带宽利用率。
 ## 5.2 把 scale/bias/sigmoid 融进 split-K 的 finalize（减少一次全量读写）
 
 这一步的直觉是：split-K 本来就需要一个 finalize kernel 把 `Y_acc/R_acc` 归并成最终 `Y/R`，那么把下面这些“逐元素后处理”塞进去，收益很稳定：
@@ -412,11 +476,84 @@ mhc-gemm-rms-scale-performance-bfloat16-TFLOPS:
 - `sigmoid / 2*sigmoid`（只作用在 `pre/post` 的前 `2n` 个通道）
 
 **对应实现**
-- `mhc_finalize_scale_bias_sigmoid_kernel`：先 `for split_idx in range(SPLIT_K)` 归并 `y_accum/r_accum`，再在同一个 kernel 里完成 scale/bias/sigmoid 并写回 `Y`
-- 用 `mask_pre/mask_post/mask_res` 对 3 段系数做分段处理（避免分 3 个 kernel）
+```Python
+def mhc_finalize_scale_bias_sigmoid_kernel(
+    Y_acc,
+    R_acc,
+    Y,
+    R,
+    n: int,
+    alpha_pre: float,
+    alpha_post: float,
+    alpha_res: float,
+    Bias,
+    M: int,
+    N: int,
+    K: int,
+    TILE_SIZE_M: ConstInt,
+    TILE_SIZE_N: ConstInt,
+    SPLIT_K: ConstInt,
+):
+    """Finalize split-K + fused scale/bias/sigmoid kernel for mHC."""
+    bid_m = ct.bid(0)
+    bid_n = ct.bid(1)
+    num_bid_m = ct.cdiv(M, TILE_SIZE_M)
+    num_bid_n = ct.cdiv(N, TILE_SIZE_N)
+    y_accum = ct.full((TILE_SIZE_M, TILE_SIZE_N), 0.0, dtype=ct.float32)
+    r_accum = ct.full((TILE_SIZE_M, 1), 0.0, dtype=ct.float32)
+    # Sum across split_k dimension
+    for split_idx in range(SPLIT_K):
+        bid_m_k = bid_m + split_idx * num_bid_m
+        y_tile = ct.load(
+            Y_acc,
+            index=(bid_m_k, bid_n),
+            shape=(TILE_SIZE_M, TILE_SIZE_N),
+            padding_mode=ct.PaddingMode.ZERO,
+        )
+        y_accum = y_accum + y_tile
+        # RMS is independent of bid_n; each bid_n block stores the same partial RMS.
+        # Loading the current bid_n avoids over-counting when num_bid_n > 1.
+        r_tile = ct.load(
+            R_acc,
+            index=(bid_m_k, bid_n),
+            shape=(TILE_SIZE_M, 1),
+            padding_mode=ct.PaddingMode.ZERO,
+        )
+        r_tile = ct.astype(r_tile, ct.float32)
+        r_accum = r_accum + r_tile
+    denom = ct.full((TILE_SIZE_M, 1), K * 1.0, dtype=ct.float32)
+    mean = ct.truediv(r_accum, denom)
+    rstd = ct.rsqrt(mean)
+    ones = ct.full((TILE_SIZE_M, 1), 1.0, dtype=ct.float32)
+    r = ct.truediv(ones, rstd)
+    if bid_n == 0:
+        r_out = ct.astype(r, R.dtype)
+        ct.store(R, index=(bid_m, 0), tile=r_out)
+    offsets = ct.arange(TILE_SIZE_N, dtype=ct.int32)
+    col_ids = bid_n * TILE_SIZE_N + offsets
+    bias = ct.load(Bias, index=(bid_n,), shape=(TILE_SIZE_N,), padding_mode=ct.PaddingMode.ZERO)
+    bias = ct.reshape(bias, (1, TILE_SIZE_N))
+    one = ct.full((TILE_SIZE_N,), 1.0, dtype=ct.float32)
+    zero = ct.full((TILE_SIZE_N,), 0.0, dtype=ct.float32)
+    mask_pre = ct.where(ct.less(col_ids, n), one, zero)
+    mask_post = ct.where(ct.less(col_ids, 2 * n), one, zero)
+    mask_post = mask_post - mask_pre
+    mask_res = one - mask_pre - mask_post
+    scale = alpha_pre * mask_pre + alpha_post * mask_post + alpha_res * mask_res
+    scale = ct.reshape(scale, (1, TILE_SIZE_N))
+    linear = ct.truediv(y_accum * scale, r) + ct.astype(bias, ct.float32)
+    sigmoid_linear = _sigmoid(linear)
+    two_sigmoid = sigmoid_linear * 2.0
+    mask_pre = ct.reshape(mask_pre, (1, TILE_SIZE_N))
+    mask_post = ct.reshape(mask_post, (1, TILE_SIZE_N))
+    mask_res = ct.reshape(mask_res, (1, TILE_SIZE_N))
+    out = linear * mask_res + sigmoid_linear * mask_pre + two_sigmoid * mask_post
+    out = ct.astype(out, Y.dtype)
+    ct.store(Y, index=(bid_m, bid_n), tile=out)
+```
 
 **效果**
-- 在上面的 bench 结果中，可以看到，split+finalize 两个 Kernel 耗时 `117 us` , 而单独的 split 算子耗时 `100 us`，因此可知，这里的 finalize 算子耗时为 `17us`
+- 作为前一个算子的收尾算子+融合 scale，其耗时不大，将 gemm+rms+scale 作为一个整体来看，实现的带宽仍能达到 `4513 GBps`.
 
 ## 5.3 sinkhorn：把 `n×n` 当成寄存器里的小矩阵来算
 `n=4` 时 `n×n=16`，对每个 sample 而言数据量极小，真正的瓶颈反而是：
@@ -429,17 +566,29 @@ mhc-gemm-rms-scale-performance-bfloat16-TFLOPS:
 
 **对应实现**
 ```Python
-mat = ct.load(Y, index=(row, 0), shape=(1, total))
-mat = ct.reshape(mat, (n, n))
-mat = ct.astype(mat, ct.float32)
-mat = ct.exp2(mat * LOG2E)
-for _ in range(20):
-    mat = mat / ct.sum(mat, axis=1, keepdims=True)
-    mat = mat / ct.sum(mat, axis=0, keepdims=True)
+def mhc_sinkhorn_kernel(
+    Y,
+    n: ct.Constant[int],
+):
+    """Sinkhorn-Knopp normalization for residual block (in-place on Y)."""
+    row = ct.bid(0)
+    total = n * n
+    mat = ct.load(Y, index=(row, 0), shape=(1, total))
+    mat = ct.reshape(mat, (n, n))
+    mat = ct.astype(mat, ct.float32)
+    mat = ct.exp2(mat * LOG2E)
+    for _ in range(20):
+        row_sum = ct.sum(mat, axis=1, keepdims=True)
+        mat = ct.truediv(mat, row_sum)
+        col_sum = ct.sum(mat, axis=0, keepdims=True)
+        mat = ct.truediv(mat, col_sum)
+    mat = ct.reshape(mat, (1, total))
+    mat = ct.astype(mat, Y.dtype)
+    ct.store(Y, index=(row, 0), tile=mat)
 ```
 
 **效果**
-- 见 5.5：`mhc_sinkhorn` 在这组配置下是 `0.0262ms`（≈`26us`）。
+- 这个算子计算量和 IO 量都不大，主要还是看 IO 的实现效率，循环 20 次耗时 `26us`左右，已经接近了手搓 cuda 的性能了。
 
 ## 5.4 apply：明确是带宽问题，用“连续 load + 向量 FMA”把中间态压扁
 apply 阶段的数学很简单：
@@ -451,37 +600,79 @@ apply 阶段的数学很简单：
 > [!important]
 > 让 `X` 只被连续读取一次，让 `Out` 只被连续写一次；不要让 `H_post/H_res` 的访问打断吞吐。
 
-**优化抓手**
+**优化思路**
 - [x] 手写 FMA，不用 MMA：`n=4` 时 `4×4` 的 mixing 太小，走 `mma` 只会引入额外搬运/对齐成本；直接做 `acc += h * x` 更划算
 - [x] 避免 `gather/scatter`：把 `y_post/y_res` 先 `narrow/view` 成 `[B, n]` 和 `[B, n, n]`，kernel 内直接 `ct.load` 连续块
 - [x] 沿 `C` 做分块（`TILE_SIZE_C`）：每个 CTA 负责 `[n, TILE_SIZE_C]` 的输出 tile，让访问模式尽量全是连续向量 load/store
 
 **对应实现**
-- `mhc_apply_residual`：把外部 `[B, nC]` view 成 `[B, n, C]`，并提前切出 `y_post/y_res`
-- `mhc_apply_residual_kernel`：先把 `h_post/h_res` 一次性 load 到寄存器，再遍历 `j in range(n)` 连续读取 `X[row, j, c_tile]`
-
-**效果**
-- 见 5.5：`mhc_apply_residual` 在这组配置下是 `0.1610ms`（≈`161us`）。
-
-## 5.5 benchmark
-注：这里的 benchmark 配置以 `bench_mhc.py` 为准（`x` 为 `bfloat16`，部分权重/中间量为 `float32`），与前文的 FP8 基准不完全一致；主要用于验证优化方向与数量级。
-```Shell
-[bench] mhc_split_gemm_rms_kernel M=8192 dtype=torch.bfloat16 ms=0.1010 cfg=(m=128, n=32, k=128, split_k=2, group_size_m=8)
-[bench] deepgemm.tf32_hc_prenorm_gemm M=8192 dtype=torch.bfloat16 num_splits=2 ms=0.0897
-[bench] mhc_gemm_rms_scale M=8192 backend=cutile dtype=torch.bfloat16 ms=0.1171
-[bench] mhc_gemm_rms_scale M=8192 backend=torch dtype=torch.bfloat16 ms=1.2159
-mhc-gemm-rms-scale-performance-bfloat16-TFLOPS:
-        M      CuTile     Torch
-0  8192.0  100.268745  9.659018
-[bench] mhc_sinkhorn M=8192 backend=cutile dtype=torch.bfloat16 ms=0.0262
-[bench] mhc_sinkhorn M=8192 backend=torch dtype=torch.bfloat16 ms=0.1988
-mhc-sinkhorn-performance-bfloat16-GBps:
-        M     CuTile     Torch
-0  8192.0  40.001384  5.275819
-[bench] mhc_apply_residual M=8192 backend=cutile dtype=torch.bfloat16 ms=0.1595
-[bench] mhc_apply_residual M=8192 backend=torch dtype=torch.bfloat16 ms=3.1293
-mhc-apply-residual-performance-bfloat16-GBps:
-        M       CuTile       Torch
-0  8192.0  6627.235525  337.890399
+```Python
+def mhc_apply_residual_kernel(
+    X,
+    F_out,
+    Y_post,
+    Y_res,
+    Out,
+    C: int,
+    n: ct.Constant[int],
+    TILE_SIZE_C: ConstInt,
+):
+    """Apply H_res and H_post to residual stream (in-place on Out)."""
+    # Shapes:
+    # - X: [B, n, C] view of residual stream
+    # - F_out: [B, C]
+    # - Y_post: [B, n]
+    # - Y_res: [B, n, n]
+    # - Out: [B, n, C]
+    row = ct.bid(0)
+    c_tile = ct.bid(1)
+    compute_dtype = ct.float32 if (X.dtype == ct.float32 or F_out.dtype == ct.float32 or Y_post.dtype == ct.float32) else X.dtype
+    f_tile = ct.load(
+        F_out,
+        index=(row, c_tile),
+        shape=(1, TILE_SIZE_C),
+        padding_mode=ct.PaddingMode.ZERO,
+    )
+    f_tile = ct.astype(f_tile, compute_dtype)
+    h_post = ct.load(
+        Y_post,
+        index=(row, 0),
+        shape=(1, n),
+        padding_mode=ct.PaddingMode.ZERO,
+    )
+    h_post = ct.reshape(h_post, (n, 1))
+    h_post = ct.astype(h_post, compute_dtype)
+    h_res = ct.load(
+        Y_res,
+        index=(row, 0, 0),
+        shape=(1, n, n),
+        padding_mode=ct.PaddingMode.ZERO,
+    )
+    h_res = ct.reshape(h_res, (n, n))
+    h_res = ct.astype(h_res, compute_dtype)
+    acc = ct.full((n, TILE_SIZE_C), 0.0, dtype=compute_dtype)
+    for j in range(n):
+        x_row = ct.load(
+            X,
+            index=(row, j, c_tile),
+            shape=(1, 1, TILE_SIZE_C),
+            padding_mode=ct.PaddingMode.ZERO,
+        )
+        x_row = ct.reshape(x_row, (1, TILE_SIZE_C))
+        x_row = ct.astype(x_row, compute_dtype)
+        h_col = ct.extract(h_res, (0, j), shape=(n, 1))
+        x_row = ct.broadcast_to(x_row, (n, TILE_SIZE_C))
+        h_col = ct.broadcast_to(h_col, (n, TILE_SIZE_C))
+        prod = h_col * x_row
+        acc = acc + prod
+    h_post = ct.broadcast_to(h_post, (n, TILE_SIZE_C))
+    f_tile = ct.broadcast_to(f_tile, (n, TILE_SIZE_C))
+    x_post = h_post * f_tile
+    out_tile = acc + x_post
+    out_tile = ct.astype(out_tile, Out.dtype)
+    out_tile = ct.reshape(out_tile, (1, n, TILE_SIZE_C))
+    ct.store(Out, index=(row, 0, c_tile), tile=out_tile)
 ```
 
+**效果**
+- 见上文的bench 数据，其实现的带宽极高，能达到`6602 GBps`, 说明其优化空间已经不大。

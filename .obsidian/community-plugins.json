@@ -1,8 +1,8 @@
 [
   "obsidian-importer",
   "make-md",
-  "paste-reformatter",
   "insta-toc",
   "image-captions",
-  "copy-image"
+  "copy-image",
+  "paste-reformatter"
 ]

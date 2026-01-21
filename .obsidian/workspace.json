@@ -11,12 +11,14 @@
             "id": "ee05abaf7b4fc4f8",
             "type": "leaf",
             "state": {
-              "type": "mk-space",
+              "type": "markdown",
               "state": {
-                "path": "私人"
+                "file": "私人/常用命令.md",
+                "mode": "source",
+                "source": false
               },
               "icon": "lucide-file",
-              "title": "私人"
+              "title": "常用命令"
             }
           }
         ]
@@ -73,7 +75,7 @@
             }
           },
           {
-            "id": "2029199a4f417ff5",
+            "id": "dc7b7925710e702e",
             "type": "leaf",
             "state": {
               "type": "mk-path-view",
@@ -165,12 +167,13 @@
             "state": {
               "type": "outline",
               "state": {
+                "file": "私人/常用命令.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
               },
               "icon": "lucide-list",
-              "title": "大纲"
+              "title": "常用命令 的大纲"
             }
           }
         ],
@@ -190,12 +193,15 @@
       "obsidian-importer:Open Importer": false
     }
   },
-  "active": "2029199a4f417ff5",
+  "active": "ee05abaf7b4fc4f8",
   "lastOpenFiles": [
+    "公开/公开.md",
+    "资源/FA4--pipeline.drawio.svg",
+    "Vault.md",
+    "私人/常用命令.md",
     "私人/私人.md",
     "公开/mHC 算法分析 & 算子实现.md",
     "公开/CuTile学习—从 GEMM 开始.md",
-    "公开/公开.md",
     "私人/闪电模型 nsys-profiler.md",
     "私人/AIAK_OP_Profiler 构建.md",
     "私人/Silu_and_mul_ep_index_quant_3d 算子优化初探.md",
@@ -220,11 +226,9 @@
     "Tags",
     "私人/【WIP】模拟器优化.md",
     "私人/【WIP】工作价值.md",
-    "Vault.md",
     "公开/TileLang  SM100 GEMM 初探.md",
     "Untitled.md",
     "私人/【WIP】算子测试经验.md",
-    "资源/746a162d577a82306f64d362a27eb0b0.jpg",
     "资源",
     "Export-7935bbcb-4b08-4184-ac69-3746945b0c1c/工作.md",
     "Export-7935bbcb-4b08-4184-ac69-3746945b0c1c/People.md",
@@ -235,7 +239,6 @@
     "私人",
     "Export-7935bbcb-4b08-4184-ac69-3746945b0c1c",
     "images",
-    "工作.md",
     "私人"
   ]
 }

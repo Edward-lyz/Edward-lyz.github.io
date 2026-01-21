@@ -11,14 +11,12 @@
             "id": "ee05abaf7b4fc4f8",
             "type": "leaf",
             "state": {
-              "type": "markdown",
+              "type": "mk-space",
               "state": {
-                "file": "公开/mHC 算法分析 & 算子实现.md",
-                "mode": "source",
-                "source": false
+                "path": "私人"
               },
               "icon": "lucide-file",
-              "title": "mHC 算法分析 & 算子实现"
+              "title": "私人"
             }
           }
         ]
@@ -167,13 +165,12 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "公开/mHC 算法分析 & 算子实现.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
               },
               "icon": "lucide-list",
-              "title": "mHC 算法分析 & 算子实现 的大纲"
+              "title": "大纲"
             }
           }
         ],
@@ -195,16 +192,16 @@
   },
   "active": "2029199a4f417ff5",
   "lastOpenFiles": [
+    "私人/私人.md",
+    "公开/mHC 算法分析 & 算子实现.md",
     "公开/CuTile学习—从 GEMM 开始.md",
     "公开/公开.md",
-    "私人/私人.md",
     "私人/闪电模型 nsys-profiler.md",
     "私人/AIAK_OP_Profiler 构建.md",
     "私人/Silu_and_mul_ep_index_quant_3d 算子优化初探.md",
     "私人/biased_group_topk 优化&学习.md",
     "公开/GroupGEMM 最佳效率探索.md",
     "私人/【WIP】DeepGEMM 1d2d 初探.md",
-    "公开/mHC 算法分析 & 算子实现.md",
     "公开/推理引擎的“蝴蝶效应” -- 从V32 模型的输出不一致说起.md",
     "资源/test_attn_mqa_determinism.py",
     "资源/diff_safetensors.py",

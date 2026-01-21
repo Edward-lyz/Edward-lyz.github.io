@@ -7,7 +7,7 @@ hasCJKLanguage = true
 contentDir = ".github/build-content"
 layoutDir = ".github/layouts"
 assetDir = ".github/assets"
-staticDir = "图片"
+staticDir = "资源"
 
 canonifyURLs = true
 enableRobotsTXT = true

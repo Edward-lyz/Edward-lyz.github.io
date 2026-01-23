@@ -39,8 +39,8 @@
   "deleteFileOption": "trash",
   "expandedSpaces": [
     "/",
-    "//公开",
-    "//私人"
+    "//私人",
+    "//公开"
   ],
   "expandFolderOnClick": true,
   "spacesFolder": "Tags",

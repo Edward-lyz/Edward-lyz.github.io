@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "私人/常用命令.md",
+                "file": "私人/远程服务器开启 SFTP -- 保持代码在本地.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "常用命令"
+              "title": "远程服务器开启 SFTP -- 保持代码在本地"
             }
           }
         ]
@@ -75,7 +75,7 @@
             }
           },
           {
-            "id": "54610fddd2e365b3",
+            "id": "7b5037d758d4a8d4",
             "type": "leaf",
             "state": {
               "type": "mk-path-view",
@@ -89,7 +89,7 @@
       }
     ],
     "direction": "horizontal",
-    "width": 322.5
+    "width": 387.5
   },
   "right": {
     "id": "f80a077de5181406",
@@ -167,13 +167,13 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "私人/常用命令.md",
+                "file": "私人/远程服务器开启 SFTP -- 保持代码在本地.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
               },
               "icon": "lucide-list",
-              "title": "常用命令 的大纲"
+              "title": "远程服务器开启 SFTP -- 保持代码在本地 的大纲"
             }
           }
         ],
@@ -195,18 +195,22 @@
   },
   "active": "ee05abaf7b4fc4f8",
   "lastOpenFiles": [
+    "资源/本地上传演示.png",
+    "私人/远程服务器开启 SFTP -- 保持代码在本地.md",
+    "资源/SFTP vscode 展示.png",
     "私人/AIAK_OP_Profiler 构建.md",
+    "私人/Dedupulicate_Topk 算子优化.md",
+    "私人/【WIP】引擎调用DEEPGEMM的group_gemm 前置优化.md",
+    "私人/闪电模型 nsys-profiler.md",
+    "私人/常用命令.md",
     "Tags",
     "私人/工作 Trace.canvas",
     "公开/mHC 算法分析 & 算子实现.md",
     "公开/FA4代码学习 (以 MLA-Prefill 为例).md",
     "私人/biased_group_topk 优化&学习.md",
     "私人/Silu_and_mul_ep_index_quant_3d 算子优化初探.md",
-    "私人/闪电模型 nsys-profiler.md",
     "私人/【WIP】模拟器优化.md",
     "私人/私人.md",
-    "私人/常用命令.md",
-    "私人/Untitled.md",
     "公开/公开.md",
     "资源/FA4--pipeline.drawio.svg",
     "Vault.md",
@@ -225,16 +229,12 @@
     "公开/引擎侧的指标衡量&服务测试.md",
     "资源/逐层误差区间对比直方图.png",
     "资源/kvcache_sorted_compare.png",
-    "资源/attn1_layer_0_compare.png",
-    "资源/attn0_layer_0_compare.png",
     "私人/【WIP】工作价值.md",
     "公开/TileLang  SM100 GEMM 初探.md",
     "Untitled.md",
     "私人/【WIP】算子测试经验.md",
     "资源",
     "Export-7935bbcb-4b08-4184-ac69-3746945b0c1c/工作.md",
-    "Export-7935bbcb-4b08-4184-ac69-3746945b0c1c/People.md",
-    "Export-7935bbcb-4b08-4184-ac69-3746945b0c1c/People/李琰朕.md",
     "Export-7935bbcb-4b08-4184-ac69-3746945b0c1c/People",
     "公开",
     "私人",

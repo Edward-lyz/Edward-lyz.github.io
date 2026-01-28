@@ -1,7 +1,9 @@
 # 背景：
 在 `kvoffload` 这个版本的 `sglang` 的推理的投机采样（Speculative Sampling）阶段，引擎需要对生成的 `TopK` 候选 `Token` 索引进行去重，这就引入了本次的优化算子。
+
 **算子语义**：
-对每个 `batch` 将 `mtp_step` 个 `top‑k index` 行做去重，输出长度固定为 `mtp_step * k`，不足用 -1 填充
+- 对每个 `batch` 将 `mtp_step` 个 `top‑k index` 行做去重，输出长度固定为 `mtp_step * k`，不足用 -1 填充
+
 **场景特征**：
 - **小 Batch**：`bs=115`，GPU 并行度（Occupancy）天然不足。
 - **延迟敏感**：这是在线服务链路的一环，对 Latency 极度敏感。

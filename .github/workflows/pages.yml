@@ -56,3 +56,66 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
+
+      - name: Submit IndexNow
+        continue-on-error: true
+        env:
+          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+          INDEXNOW_KEY: 42498c20047b46789110566694f8e9ac
+          INDEXNOW_ENDPOINT: https://api.indexnow.org/indexnow
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import time
+          from urllib.parse import urlparse
+          from urllib.request import Request, urlopen
+
+          page_url = os.environ['PAGE_URL'].rstrip('/') + '/'
+          key = os.environ['INDEXNOW_KEY'].strip()
+          endpoint = os.environ.get('INDEXNOW_ENDPOINT', 'https://api.indexnow.org/indexnow')
+
+          host = urlparse(page_url).netloc
+          key_location = f'https://{host}/{key}.txt'
+          sitemap_url = page_url + 'sitemap.xml'
+
+          def fetch_text(url: str, tries: int = 5, sleep_s: int = 3) -> str:
+            last_exc = None
+            for _ in range(tries):
+              try:
+                with urlopen(url, timeout=30) as resp:
+                  return resp.read().decode('utf-8', errors='replace')
+              except Exception as e:
+                last_exc = e
+                time.sleep(sleep_s)
+            raise last_exc
+
+          if fetch_text(key_location).strip() != key:
+            raise RuntimeError('IndexNow key file not ready')
+
+          sitemap = fetch_text(sitemap_url)
+          urls = re.findall(r'<loc>([^<]+)</loc>', sitemap)
+
+          seen = set()
+          url_list = []
+          for u in urls:
+            if u not in seen:
+              seen.add(u)
+              url_list.append(u)
+
+          url_list = url_list[:10000]
+          payload = {
+            'host': host,
+            'key': key,
+            'keyLocation': key_location,
+            'urlList': url_list,
+          }
+
+          data = json.dumps(payload).encode('utf-8')
+          req = Request(endpoint, data=data, method='POST')
+          req.add_header('Content-Type', 'application/json; charset=utf-8')
+          with urlopen(req, timeout=30) as resp:
+            status = getattr(resp, 'status', None) or resp.getcode()
+            print('IndexNow status:', status, 'urls:', len(url_list))
+          PY

@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "公开/Cutile 复刻高性能 groupgemm 之路.md",
+                "file": "私人/kv_offload 迁移至社区 HiCache 初稿.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "Cutile 复刻高性能 groupgemm 之路"
+              "title": "kv_offload 迁移至社区 HiCache 初稿"
             }
           }
         ]
@@ -75,7 +75,7 @@
             }
           },
           {
-            "id": "776d188c7269aeb7",
+            "id": "de240b0fb14930d0",
             "type": "leaf",
             "state": {
               "type": "mk-path-view",
@@ -167,13 +167,13 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "公开/Cutile 复刻高性能 groupgemm 之路.md",
+                "file": "私人/kv_offload 迁移至社区 HiCache 初稿.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
               },
               "icon": "lucide-list",
-              "title": "Cutile 复刻高性能 groupgemm 之路 的大纲"
+              "title": "kv_offload 迁移至社区 HiCache 初稿 的大纲"
             }
           }
         ],
@@ -195,36 +195,36 @@
   },
   "active": "ee05abaf7b4fc4f8",
   "lastOpenFiles": [
-    "公开/CuTile学习—从 GEMM 开始.md",
-    "公开/Cutile 复刻高性能 groupgemm 之路.md",
-    "公开/mHC 算法分析 & cutile 高效实现.md",
     "私人/常用命令.md",
-    "公开/Docker 和 Kubernetes 中的 Linux 容器特权详解.md",
-    "公开/Fast_H2D 算子优化记录.md",
+    "私人/kv_offload 迁移至社区 HiCache 初稿.md",
+    "私人/AIAK_OP_Profiler 构建.md",
+    "私人/Cutile 复刻高性能 groupgemm 之路.md",
+    "私人/远程服务器开启 SFTP -- 保持代码在本地.md",
+    "私人/闪电模型 nsys-profiler.md",
+    "私人/算子测试经验.md",
+    "私人/工作价值.md",
+    "公开/NCU 食用指南.md",
+    "公开/公开.md",
+    "公开/TileLang  SM100 GEMM 初探.md",
+    "公开/mHC 算法分析 & cutile 高效实现.md",
     "公开/引擎侧的指标衡量&服务测试.md",
     "公开/推理引擎的“蝴蝶效应” -- 从V32 模型的输出不一致说起.md",
-    "私人/闪电模型 nsys-profiler.md",
-    "私人/远程服务器开启 SFTP -- 保持代码在本地.md",
+    "公开/Dedupulicate_Topk 算子优化.md",
+    "私人/LLM 随想.md",
+    "公开/.md",
+    "公开/Docker 和 Kubernetes 中的 Linux 容器特权详解.md",
+    "公开/GroupGEMM 最佳效率探索.md",
+    "公开/CuTile学习—从 GEMM 开始.md",
+    "公开/Fast_H2D 算子优化记录.md",
     "公开/biased_group_topk 优化&学习.md",
     "私人/Silu_and_mul_ep_index_quant_3d 算子优化初探.md",
-    "公开/Dedupulicate_Topk 算子优化.md",
-    "公开/GroupGEMM 最佳效率探索.md",
     "私人/模拟器优化.md",
     "私人/【WIP】模拟器优化.md",
     "公开/FA4代码学习 (以 MLA-Prefill 为例).md",
-    "公开/TileLang  SM100 GEMM 初探.md",
-    "私人/LLM 随想.md",
-    "私人/工作价值.md",
-    "私人/算子测试经验.md",
-    "私人/【WIP】DeepGEMM 1d2d 初探.md",
     "资源/本地上传演示.png",
     "资源/SFTP vscode 展示.png",
-    "私人/AIAK_OP_Profiler 构建.md",
-    "私人/【WIP】引擎调用DEEPGEMM的group_gemm 前置优化.md",
     "Tags",
     "私人/工作 Trace.canvas",
-    "私人/私人.md",
-    "公开/公开.md",
     "资源/FA4--pipeline.drawio.svg",
     "资源/test_attn_mqa_determinism.py",
     "资源/diff_safetensors.py",

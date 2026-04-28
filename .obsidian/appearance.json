@@ -1,7 +1,7 @@
 {
   "monospaceFontFamily": "JetBrains Mono",
   "translucency": true,
-  "cssTheme": "Minimal",
+  "cssTheme": "Obsidian Nord",
   "enabledCssSnippets": [
     "line-height"
   ]

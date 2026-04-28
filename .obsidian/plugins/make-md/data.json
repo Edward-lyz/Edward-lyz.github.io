@@ -39,8 +39,8 @@
   "deleteFileOption": "trash",
   "expandedSpaces": [
     "/",
-    "//私人",
-    "//公开"
+    "//资源/资源/notion-assets",
+    "//私人"
   ],
   "expandFolderOnClick": true,
   "spacesFolder": "Tags",

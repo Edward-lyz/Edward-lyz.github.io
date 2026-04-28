@@ -1,0 +1,1231 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ShadowRadix 动态讲解</title>
+    <style>
+:root {
+  --bg: #f6f7f9;
+  --ink: #16181d;
+  --muted: #626b7a;
+  --line: #d5dbe5;
+  --panel: #ffffff;
+  --source: #e9edf3;
+  --swa: #42b883;
+  --swa-dark: #247453;
+  --c4: #f28d35;
+  --c4-dark: #9b4c0d;
+  --c128: #a76de8;
+  --c128-dark: #6340a0;
+  --blue: #2f6df6;
+  --danger: #d54b4b;
+  --shadow: 0 18px 55px rgba(26, 34, 48, 0.12);
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  color: var(--ink);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.75), rgba(246, 247, 249, 0.96)),
+    var(--bg);
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.app {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: minmax(0, 1180px);
+  justify-content: center;
+  padding: 14px;
+  overflow: visible;
+}
+
+.stage-panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+
+.stage-panel {
+  display: grid;
+  grid-template-rows: auto auto minmax(390px, 1fr) auto;
+  min-height: calc(100vh - 28px);
+  overflow: hidden;
+}
+
+.titlebar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 28px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.kicker {
+  margin: 0 0 5px;
+  color: var(--blue);
+  font-size: 12px;
+  font-weight: 750;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin-top: 0;
+}
+
+h1 {
+  margin-bottom: 0;
+  font-size: 28px;
+  line-height: 1.12;
+  letter-spacing: 0;
+}
+
+h2 {
+  margin-bottom: 8px;
+  font-size: 22px;
+  line-height: 1.2;
+  letter-spacing: 0;
+}
+
+h3 {
+  margin-bottom: 8px;
+  font-size: 14px;
+  line-height: 1.2;
+  letter-spacing: 0;
+}
+
+.params {
+  display: grid;
+  grid-template-columns: repeat(2, max-content);
+  gap: 7px;
+  color: #2d3440;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.params span {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 7px;
+  background: #fbfcfe;
+}
+
+.slide-copy {
+  min-height: 126px;
+  padding: 20px 30px 12px;
+}
+
+.slide-copy p {
+  margin-bottom: 0;
+  max-width: 960px;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.slide-step {
+  margin-bottom: 6px;
+  color: var(--blue) !important;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.diagram {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  background: linear-gradient(180deg, #ffffff 0%, #fbfcff 100%);
+}
+
+.controls {
+  display: grid;
+  gap: 14px;
+  align-items: center;
+  padding: 14px 24px 18px;
+  border-top: 1px solid var(--line);
+}
+
+.playback-controls {
+  display: grid;
+  grid-template-columns: auto auto auto minmax(160px, 1fr);
+  gap: 10px;
+  align-items: center;
+}
+
+.embed-controls {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(210px, 1fr));
+  gap: 14px;
+}
+
+button {
+  min-width: 74px;
+  border: 1px solid #c5cedb;
+  border-radius: 6px;
+  padding: 8px 10px;
+  color: #151922;
+  background: #ffffff;
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: #8fa1bc;
+  background: #f7f9fc;
+}
+
+button:active {
+  transform: translateY(1px);
+}
+
+input[type="range"] {
+  width: 100%;
+  accent-color: var(--blue);
+}
+
+.control-block {
+  display: grid;
+  gap: 8px;
+}
+
+.control-block label {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.inline-control {
+  display: grid;
+  grid-template-columns: 1fr 54px;
+  gap: 10px;
+  align-items: center;
+}
+
+.token-select-row {
+  display: grid;
+  grid-template-columns: 1fr 74px 48px;
+  gap: 10px;
+  align-items: center;
+}
+
+input[type="number"] {
+  width: 74px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 7px;
+  color: #1c2430;
+  background: #fff;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.quick-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.quick-buttons button {
+  min-width: 0;
+  padding: 6px 9px;
+  font-size: 12px;
+}
+
+output {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  text-align: right;
+  color: #1c2430;
+}
+
+.axis-label {
+  fill: #485466;
+  font-size: 24px;
+  font-weight: 750;
+}
+
+.small-label {
+  fill: #5f6b7b;
+  font-size: 17px;
+}
+
+.tiny-label {
+  fill: #687489;
+  font-size: 15px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.mono-label {
+  fill: #2f3848;
+  font-size: 16px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.source-band {
+  fill: var(--source);
+  stroke: #9ba8ba;
+  stroke-width: 1.4;
+  cursor: crosshair;
+}
+
+.pool-band {
+  stroke-width: 1.8;
+}
+
+.swa-band {
+  fill: rgba(66, 184, 131, 0.36);
+  stroke: var(--swa-dark);
+}
+
+.c4-band {
+  fill: rgba(242, 141, 53, 0.28);
+  stroke: var(--c4-dark);
+}
+
+.c128-band {
+  fill: rgba(167, 109, 232, 0.3);
+  stroke: var(--c128-dark);
+}
+
+.ghost-band {
+  fill: rgba(128, 139, 156, 0.08);
+  stroke: #bac4d2;
+  stroke-dasharray: 7 7;
+}
+
+.probe-line {
+  stroke: var(--blue);
+  stroke-width: 2.5;
+}
+
+.shadow-line {
+  fill: none;
+  stroke-width: 2.4;
+  marker-end: url(#arrow);
+}
+
+.shadow-line.is-missing {
+  stroke-dasharray: 7 6;
+  marker-end: none;
+}
+
+.highlight-rect {
+  fill: none;
+  stroke: var(--blue);
+  stroke-width: 3;
+}
+
+.token-dot {
+  fill: var(--blue);
+  stroke: #ffffff;
+  stroke-width: 2;
+}
+
+.range-label-bg {
+  fill: rgba(255, 255, 255, 0.85);
+  stroke: #dbe2ec;
+  stroke-width: 1;
+}
+
+.state-box {
+  fill: #f7f9fc;
+  stroke: #cbd4e1;
+  stroke-width: 1.2;
+}
+
+.danger-text {
+  fill: var(--danger);
+  font-size: 16px;
+  font-weight: 750;
+}
+
+.safe-text {
+  fill: var(--swa-dark);
+  font-size: 16px;
+  font-weight: 750;
+}
+
+@media (max-width: 1050px) {
+  .app {
+    grid-template-columns: 1fr;
+  }
+
+  .embed-controls {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .app {
+    padding: 10px;
+  }
+
+  .titlebar {
+    flex-direction: column;
+  }
+
+  .params {
+    grid-template-columns: 1fr 1fr;
+    width: 100%;
+  }
+
+  h1 {
+    font-size: 23px;
+  }
+
+  .playback-controls {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  #slideInput {
+    grid-column: 1 / -1;
+  }
+
+  .slide-copy {
+    padding: 18px 20px 10px;
+  }
+}
+
+    </style>
+  </head>
+  <body>
+    <main class="app">
+      <section class="stage-panel" aria-label="ShadowRadix 动态图">
+        <header class="titlebar">
+          <div>
+            <p class="kicker">DeepSeek-V4 Hybrid Attention</p>
+            <h1>ShadowRadix: 一个 source，多套 shadow</h1>
+          </div>
+          <div class="params" aria-label="真实参数">
+            <span>source=1024</span>
+            <span>SWA=128</span>
+            <span>C4=4:1</span>
+            <span>C128=128:1</span>
+          </div>
+        </header>
+
+        <div class="slide-copy">
+          <p id="slideStep" class="slide-step"></p>
+          <h2 id="slideTitle"></h2>
+          <p id="slideText"></p>
+        </div>
+
+        <svg id="diagram" class="diagram" viewBox="0 0 1000 660" role="img"></svg>
+
+        <footer class="controls" aria-label="播放和交互控制">
+          <div class="playback-controls">
+            <button id="prevButton" type="button">Prev</button>
+            <button id="playButton" type="button">Play</button>
+            <button id="nextButton" type="button">Next</button>
+            <input id="slideInput" type="range" min="0" max="8" value="0" />
+          </div>
+
+          <div class="embed-controls">
+            <section class="control-block">
+              <label for="contextInput">context length</label>
+              <div class="inline-control">
+                <input id="contextInput" type="range" min="1" max="1024" value="1" />
+                <output id="contextOutput" for="contextInput">1</output>
+              </div>
+              <div class="quick-buttons" aria-label="context length 快捷选择">
+                <button id="n1Button" type="button">n=1</button>
+                <button id="n4Button" type="button">n=4</button>
+                <button id="n128Button" type="button">n=128</button>
+                <button id="n160Button" type="button">n=160</button>
+                <button id="n1024Button" type="button">n=1024</button>
+              </div>
+            </section>
+
+            <section class="control-block">
+              <label for="tokenInput">probe token</label>
+              <div class="token-select-row">
+                <input id="tokenInput" type="range" min="0" max="1023" value="897" />
+                <input id="tokenNumberInput" type="number" min="0" max="1023" value="0" />
+                <output id="tokenOutput" for="tokenInput">897</output>
+              </div>
+              <div class="quick-buttons" aria-label="probe token 快捷选择">
+                <button id="oldTokenButton" type="button">token 100</button>
+                <button id="liveTokenButton" type="button">token 897</button>
+              </div>
+            </section>
+
+            <section class="control-block">
+              <label for="matchInput">prefix match length</label>
+              <div class="inline-control">
+                <input id="matchInput" type="range" min="1" max="1024" value="1024" />
+                <output id="matchOutput" for="matchInput">1024</output>
+              </div>
+              <div class="quick-buttons" aria-label="prefix match 快捷选择">
+                <button id="unsafeMatchButton" type="button">match 900</button>
+                <button id="safeMatchButton" type="button">match 1024</button>
+              </div>
+            </section>
+          </div>
+        </footer>
+      </section>
+    </main>
+
+    <script type="module">
+function buildShadowRadixLayout({
+  sourceLength,
+  swaWindow,
+  c4Group,
+  c128Group,
+}) {
+  assertPositiveInteger(sourceLength, "sourceLength");
+  assertPositiveInteger(swaWindow, "swaWindow");
+  assertPositiveInteger(c4Group, "c4Group");
+  assertPositiveInteger(c128Group, "c128Group");
+
+  if (sourceLength < swaWindow) {
+    throw new Error("sourceLength must be at least swaWindow");
+  }
+  if (sourceLength % c4Group !== 0) {
+    throw new Error("sourceLength must be divisible by c4Group");
+  }
+  if (sourceLength % c128Group !== 0) {
+    throw new Error("sourceLength must be divisible by c128Group");
+  }
+
+  return {
+    sourceLength,
+    swaWindow,
+    c4Group,
+    c128Group,
+    swaLiveStart: sourceLength - swaWindow,
+    swaSlots: swaWindow,
+    c4Slots: sourceLength / c4Group,
+    c128Slots: sourceLength / c128Group,
+  };
+}
+
+function describeToken(layout, token) {
+  const tokenInfo = describeTokenAtLength(layout, layout.sourceLength, token);
+
+  return {
+    token: tokenInfo.token,
+    swaSlot: tokenInfo.swaSlot,
+    c4Slot: tokenInfo.c4Slot,
+    c128Slot: tokenInfo.c128Slot,
+  };
+}
+
+function buildPoolSnapshot(layout, contextLength) {
+  assertContextLength(layout, contextLength);
+
+  const swaLiveStart = Math.max(0, contextLength - layout.swaWindow);
+  const c4ReadyTokens = Math.floor(contextLength / layout.c4Group) * layout.c4Group;
+  const c128ReadyTokens =
+    Math.floor(contextLength / layout.c128Group) * layout.c128Group;
+
+  return {
+    contextLength,
+    visibleEnd: contextLength <= 160 ? 160 : layout.sourceLength,
+    sourceEnd: contextLength - 1,
+    swaLiveStart,
+    swaSlots: contextLength - swaLiveStart,
+    c4ReadyTokens,
+    c4Slots: c4ReadyTokens / layout.c4Group,
+    c128ReadyTokens,
+    c128Slots: c128ReadyTokens / layout.c128Group,
+    tombstonedSwaTokens: swaLiveStart,
+  };
+}
+
+function describeTokenAtLength(layout, contextLength, token) {
+  const snapshot = buildPoolSnapshot(layout, contextLength);
+  assertTokenInContext(snapshot, token);
+
+  const swaSlot =
+    token >= snapshot.swaLiveStart ? token - snapshot.swaLiveStart : -1;
+  const c4Slot =
+    token < snapshot.c4ReadyTokens ? Math.floor(token / layout.c4Group) : -1;
+  const c128Slot =
+    token < snapshot.c128ReadyTokens
+      ? Math.floor(token / layout.c128Group)
+      : -1;
+
+  return {
+    token,
+    swaSlot,
+    c4Slot,
+    c128Slot,
+    swaState: swaSlot >= 0 ? "live" : "tombstoned",
+    c4State: c4Slot >= 0 ? "ready" : "pending",
+    c128State: c128Slot >= 0 ? "ready" : "pending",
+  };
+}
+
+function isSwaSafePrefixMatch(layout, matchLength) {
+  return isSwaSafePrefixMatchAtLength(layout, layout.sourceLength, matchLength);
+}
+
+function isSwaSafePrefixMatchAtLength(layout, contextLength, matchLength) {
+  const snapshot = buildPoolSnapshot(layout, contextLength);
+  assertPositiveInteger(matchLength, "matchLength");
+
+  if (matchLength > contextLength) {
+    throw new Error(`matchLength must be in [1, ${contextLength}]`);
+  }
+
+  return Math.max(0, matchLength - layout.swaWindow) >= snapshot.swaLiveStart;
+}
+
+function prefixWindow(layout, matchLength) {
+  return prefixWindowAtLength(layout, layout.sourceLength, matchLength);
+}
+
+function prefixWindowAtLength(layout, contextLength, matchLength) {
+  const snapshot = buildPoolSnapshot(layout, contextLength);
+  assertPositiveInteger(matchLength, "matchLength");
+
+  if (matchLength > contextLength) {
+    throw new Error(`matchLength must be in [1, ${contextLength}]`);
+  }
+
+  return {
+    start: Math.max(0, matchLength - layout.swaWindow),
+    end: matchLength - 1,
+    isSafe: isSwaSafePrefixMatchAtLength(layout, contextLength, matchLength),
+    liveStart: snapshot.swaLiveStart,
+  };
+}
+
+function computeSglangRecoveryAtLength(layout, contextLength, matchLength) {
+  assertContextLength(layout, contextLength);
+  assertPositiveInteger(matchLength, "matchLength");
+
+  if (matchLength > contextLength) {
+    throw new Error(`matchLength must be in [1, ${contextLength}]`);
+  }
+
+  const isDirectDecodeSafe = isSwaSafePrefixMatchAtLength(
+    layout,
+    contextLength,
+    matchLength,
+  );
+  const safePrefixLength = isDirectDecodeSafe ? matchLength : 0;
+
+  return {
+    requestedMatchLength: matchLength,
+    safePrefixLength,
+    extendStart: safePrefixLength,
+    extendEnd: matchLength - 1,
+    extendTokens: matchLength - safePrefixLength,
+    isDirectDecodeSafe,
+  };
+}
+
+function assertPositiveInteger(value, name) {
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+}
+
+function assertContextLength(layout, contextLength) {
+  if (
+    !Number.isInteger(contextLength) ||
+    contextLength <= 0 ||
+    contextLength > layout.sourceLength
+  ) {
+    throw new Error(`contextLength must be in [1, ${layout.sourceLength}]`);
+  }
+}
+
+function assertTokenInContext(snapshot, token) {
+  if (!Number.isInteger(token) || token < 0 || token >= snapshot.contextLength) {
+    throw new Error(`token must be in [0, ${snapshot.contextLength})`);
+  }
+}
+
+
+const layout = buildShadowRadixLayout({
+  sourceLength: 1024,
+  swaWindow: 128,
+  c4Group: 4,
+  c128Group: 128,
+});
+
+const slides = [
+  {
+    contextLength: 1,
+    token: 0,
+    matchLength: 1,
+    title: "从第一个 token 入池开始",
+    text: "token 0 先进入逻辑 source，也进入 SWA raw pool。C4 需要 4 个 token 才能产出压缩槽，C128 需要 128 个 token，所以这两条 shadow 现在是 pending。",
+  },
+  {
+    contextLength: 4,
+    token: 0,
+    matchLength: 4,
+    title: "凑满 4 个 token，C4 槽才 ready",
+    text: "source 仍然是 0..3 的逻辑位置。C4 pool 新增 slot 0，token 0..3 都指向它。SWA 仍保留 raw token 0..3。",
+  },
+  {
+    contextLength: 128,
+    token: 0,
+    matchLength: 128,
+    title: "凑满 128 个 token，C128 槽才 ready",
+    text: "C128 slot 0 覆盖 token 0..127。到这里为止，SWA、C4、C128 都能描述 token 0，但它们不是同一份物理 KV。",
+  },
+  {
+    contextLength: 160,
+    token: 0,
+    matchLength: 160,
+    title: "继续 append 后，SWA 可以先释放旧 raw KV",
+    text: "当 n=160，SWA 只需要保留 token 32..159。token 0 的 SWA slot 变成 -1，但它的 C4 slot 0 和 C128 slot 0 仍然存在。这就是解耦。",
+  },
+  {
+    contextLength: 160,
+    token: 159,
+    matchLength: 160,
+    title: "新 token 和旧 token 的状态可以不同",
+    text: "token 159 仍在 SWA，也已经进入 C4 slot 39；但它还没有进入任何 C128 槽，因为下一个 C128 槽要等到 token 255 才完整。",
+  },
+  {
+    contextLength: 1024,
+    token: 897,
+    matchLength: 1024,
+    title: "满 1024 后，点击任意 token 看三条 shadow",
+    text: "点击图上的轴，或在下方输入 token。逻辑 token 不搬家；变化的是每个 pool 自己的 live mask 和 slot 指针。",
+  },
+  {
+    contextLength: 1024,
+    token: 100,
+    matchLength: 900,
+    title: "源码实锤：match 900 会先被截断",
+    text: "SGLang 的 _match_prefix_helper 遇到 swa_tombstone 后，只在 tombstone 后连续命中的 live SWA >=128 时才返回这个 prefix。900 只有 896..899 这 4 个 live SWA token，所以 safe_prefix_len=0。",
+  },
+  {
+    contextLength: 1024,
+    token: 100,
+    matchLength: 900,
+    title: "不是直接 decode，而是 EXTEND 重算缺口",
+    text: "Req.init_next_round_input 设 extend_input_len = len(fill_ids) - len(prefix_indices)，prepare_for_extend 用 fill_ids[len(prefix_indices):]。所以这里会重算 token 0..899，而不是把 900 当成可直接 decode 的 prefix。",
+  },
+  {
+    contextLength: 1024,
+    token: 897,
+    matchLength: 1024,
+    title: "insert 阶段把新 KV 写回 shadow 节点",
+    text: "cache_unfinished_req 调 insert；_insert_helper 碰到 tombstone 节点时，用这次 EXTEND 算出的 value 覆盖旧 value，并把 swa_tombstone 置回 false。这才是独立释放后还能继续复用的闭环。",
+  },
+];
+
+const diagram = document.querySelector("#diagram");
+const slideStep = document.querySelector("#slideStep");
+const slideTitle = document.querySelector("#slideTitle");
+const slideText = document.querySelector("#slideText");
+const slideInput = document.querySelector("#slideInput");
+const contextInput = document.querySelector("#contextInput");
+const contextOutput = document.querySelector("#contextOutput");
+const tokenInput = document.querySelector("#tokenInput");
+const tokenNumberInput = document.querySelector("#tokenNumberInput");
+const tokenOutput = document.querySelector("#tokenOutput");
+const matchInput = document.querySelector("#matchInput");
+const matchOutput = document.querySelector("#matchOutput");
+const playButton = document.querySelector("#playButton");
+
+const plotLeft = 160;
+const plotWidth = 710;
+const row = {
+  source: 60,
+  swa: 170,
+  c4: 280,
+  c128: 390,
+  prefix: 505,
+};
+const colors = {
+  blue: "#2f6df6",
+  source: "#e9edf3",
+  swa: "#42b883",
+  swaDark: "#247453",
+  c4: "#f28d35",
+  c4Dark: "#9b4c0d",
+  c128: "#a76de8",
+  c128Dark: "#6340a0",
+  danger: "#d54b4b",
+};
+
+let currentSlideIndex = 0;
+let playTimer = 0;
+
+slideInput.max = String(slides.length - 1);
+
+document.querySelector("#prevButton").addEventListener("click", () => {
+  stopPlayback();
+  setSlide(currentSlideIndex - 1);
+});
+
+document.querySelector("#nextButton").addEventListener("click", () => {
+  stopPlayback();
+  setSlide(currentSlideIndex + 1);
+});
+
+document.querySelector("#n1Button").addEventListener("click", () => setContextLength(1));
+document.querySelector("#n4Button").addEventListener("click", () => setContextLength(4));
+document.querySelector("#n128Button").addEventListener("click", () => setContextLength(128));
+document.querySelector("#n160Button").addEventListener("click", () => setContextLength(160));
+document.querySelector("#n1024Button").addEventListener("click", () => setContextLength(1024));
+
+document.querySelector("#oldTokenButton").addEventListener("click", () => {
+  if (Number(contextInput.value) <= 100) {
+    setContextLength(160);
+  }
+  setToken(100);
+});
+
+document.querySelector("#liveTokenButton").addEventListener("click", () => {
+  if (Number(contextInput.value) <= 897) {
+    setContextLength(1024);
+  }
+  setToken(897);
+});
+
+document.querySelector("#unsafeMatchButton").addEventListener("click", () => {
+  if (Number(contextInput.value) < 900) {
+    setContextLength(1024);
+  }
+  setMatchLength(900);
+});
+
+document.querySelector("#safeMatchButton").addEventListener("click", () => {
+  setContextLength(1024);
+  setMatchLength(1024);
+});
+
+playButton.addEventListener("click", () => {
+  if (playTimer) {
+    stopPlayback();
+    return;
+  }
+
+  playButton.textContent = "Pause";
+  playTimer = window.setInterval(() => {
+    setSlide(currentSlideIndex + 1);
+  }, 3200);
+});
+
+slideInput.addEventListener("input", () => {
+  stopPlayback();
+  setSlide(Number(slideInput.value));
+});
+
+contextInput.addEventListener("input", () => {
+  setContextLength(Number(contextInput.value));
+});
+
+tokenInput.addEventListener("input", () => {
+  setToken(Number(tokenInput.value));
+});
+
+tokenNumberInput.addEventListener("input", () => {
+  setToken(Number(tokenNumberInput.value));
+});
+
+matchInput.addEventListener("input", () => {
+  setMatchLength(Number(matchInput.value));
+});
+
+diagram.addEventListener("click", (event) => {
+  const svgPoint = diagram.createSVGPoint();
+  svgPoint.x = event.clientX;
+  svgPoint.y = event.clientY;
+  const point = svgPoint.matrixTransform(diagram.getScreenCTM().inverse());
+  const snapshot = buildPoolSnapshot(layout, Number(contextInput.value));
+
+  if (point.x < plotLeft || point.x > plotLeft + plotWidth) {
+    return;
+  }
+
+  const token = Math.round(((point.x - plotLeft) / plotWidth) * snapshot.visibleEnd);
+  setToken(clamp(token, 0, snapshot.contextLength - 1));
+});
+
+applySlideDefaults(slides[0]);
+render();
+
+function setSlide(nextIndex) {
+  currentSlideIndex = (nextIndex + slides.length) % slides.length;
+  slideInput.value = String(currentSlideIndex);
+  applySlideDefaults(slides[currentSlideIndex]);
+  render();
+}
+
+function applySlideDefaults(slide) {
+  contextInput.value = String(slide.contextLength);
+  updateContextDependentControlBounds(slide.contextLength);
+  tokenInput.value = String(slide.token);
+  tokenNumberInput.value = String(slide.token);
+  matchInput.value = String(slide.matchLength);
+}
+
+function setContextLength(contextLength) {
+  const clampedLength = clamp(contextLength, 1, layout.sourceLength);
+  contextInput.value = String(clampedLength);
+  updateContextDependentControlBounds(clampedLength);
+  setToken(clamp(Number(tokenInput.value), 0, clampedLength - 1), { renderNow: false });
+  setMatchLength(clamp(Number(matchInput.value), 1, clampedLength), { renderNow: false });
+  render();
+}
+
+function updateContextDependentControlBounds(contextLength) {
+  tokenInput.max = String(contextLength - 1);
+  tokenNumberInput.max = String(contextLength - 1);
+  matchInput.min = "1";
+  matchInput.max = String(contextLength);
+}
+
+function setToken(token, options = {}) {
+  const contextLength = Number(contextInput.value);
+  const clampedToken = clamp(token, 0, contextLength - 1);
+  tokenInput.value = String(clampedToken);
+  tokenNumberInput.value = String(clampedToken);
+  tokenOutput.value = String(clampedToken);
+
+  if (options.renderNow !== false) {
+    render();
+  }
+}
+
+function setMatchLength(matchLength, options = {}) {
+  const contextLength = Number(contextInput.value);
+  const clampedMatchLength = clamp(matchLength, 1, contextLength);
+  matchInput.value = String(clampedMatchLength);
+  matchOutput.value = String(clampedMatchLength);
+
+  if (options.renderNow !== false) {
+    render();
+  }
+}
+
+function stopPlayback() {
+  if (!playTimer) {
+    return;
+  }
+
+  window.clearInterval(playTimer);
+  playTimer = 0;
+  playButton.textContent = "Play";
+}
+
+function render() {
+  const contextLength = Number(contextInput.value);
+  const token = clamp(Number(tokenInput.value), 0, contextLength - 1);
+  const matchLength = clamp(Number(matchInput.value), 1, contextLength);
+  const snapshot = buildPoolSnapshot(layout, contextLength);
+  const tokenInfo = describeTokenAtLength(layout, contextLength, token);
+  const match = prefixWindowAtLength(layout, contextLength, matchLength);
+  const recovery = computeSglangRecoveryAtLength(layout, contextLength, matchLength);
+  const slide = slides[currentSlideIndex];
+
+  contextOutput.value = String(contextLength);
+  tokenOutput.value = String(token);
+  tokenNumberInput.value = String(token);
+  matchOutput.value = String(matchLength);
+  slideStep.textContent = `slide ${currentSlideIndex + 1} / ${slides.length}`;
+  slideTitle.textContent = slide.title;
+  slideText.textContent = slide.text;
+
+  renderDiagram({ snapshot, tokenInfo, match, recovery });
+}
+
+function renderDiagram({ snapshot, tokenInfo, match, recovery }) {
+  const showPrefix = currentSlideIndex >= 6;
+
+  diagram.innerHTML = `
+    <defs>
+      <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+        <path d="M0,0 L0,6 L9,3 z" fill="${colors.blue}"></path>
+      </marker>
+    </defs>
+    ${drawScaleNote(snapshot)}
+    ${drawSourceRow(snapshot)}
+    ${drawSwaRow(snapshot, tokenInfo)}
+    ${drawC4Row(snapshot, tokenInfo)}
+    ${drawC128Row(snapshot, tokenInfo)}
+    ${showPrefix ? drawPrefixRow(snapshot, match, recovery) : ""}
+    ${drawTokenProbe(snapshot, tokenInfo)}
+    ${drawStateSummary(snapshot, tokenInfo, recovery)}
+  `;
+}
+
+function drawScaleNote(snapshot) {
+  const label =
+    snapshot.visibleEnd === layout.sourceLength
+      ? "view: full 0..1024"
+      : "view: zoomed 0..160, parameters still use SWA=128 / C4=4 / C128=128";
+
+  return `<text x="${plotLeft}" y="28" class="tiny-label">${label}</text>`;
+}
+
+function drawSourceRow(snapshot) {
+  const y = row.source;
+  const sourceWidth = widthForRange(0, snapshot.contextLength, snapshot);
+  const restX = xForToken(snapshot.contextLength, snapshot);
+  const restWidth = widthForRange(snapshot.contextLength, snapshot.visibleEnd, snapshot);
+
+  return `
+    ${drawRowLabel("Source", "logical token ids", y)}
+    <rect x="${plotLeft}" y="${y}" width="${plotWidth}" height="42" class="source-band"></rect>
+    <rect x="${plotLeft}" y="${y}" width="${sourceWidth}" height="42" fill="rgba(47,109,246,0.16)" stroke="#2f6df6" stroke-width="1.5"></rect>
+    ${restWidth > 0 ? `<rect x="${restX}" y="${y}" width="${restWidth}" height="42" fill="rgba(255,255,255,0.55)" stroke="#cfd8e6" stroke-dasharray="5 5"></rect>` : ""}
+    ${drawAxisTicks(snapshot, y)}
+    ${drawRangeLabel(plotLeft + 12, y + 28, `appended: 0..${snapshot.sourceEnd}`)}
+  `;
+}
+
+function drawSwaRow(snapshot, tokenInfo) {
+  const y = row.swa;
+  const tombstoneWidth = widthForRange(0, snapshot.swaLiveStart, snapshot);
+  const liveX = xForToken(snapshot.swaLiveStart, snapshot);
+  const liveWidth = widthForRange(snapshot.swaLiveStart, snapshot.contextLength, snapshot);
+  const highlighted =
+    tokenInfo.swaSlot >= 0
+      ? drawHighlight(tokenInfo.token, tokenInfo.token + 1, snapshot, y)
+      : "";
+
+  return `
+    ${drawRowLabel("SWA", "raw KV, last 128", y)}
+    <rect x="${plotLeft}" y="${y}" width="${plotWidth}" height="42" class="ghost-band"></rect>
+    ${tombstoneWidth > 0 ? `<rect x="${plotLeft}" y="${y}" width="${tombstoneWidth}" height="42" fill="rgba(213,75,75,0.08)" stroke="#d54b4b" stroke-dasharray="7 6"></rect>` : ""}
+    ${tombstoneWidth > 0 ? `<text x="${plotLeft + 14}" y="${y + 27}" class="danger-text">released raw SWA: 0..${snapshot.swaLiveStart - 1}</text>` : ""}
+    <rect x="${liveX}" y="${y}" width="${liveWidth}" height="42" class="pool-band swa-band"></rect>
+    ${drawRangeLabel(liveX + 8, y + 28, `live: ${snapshot.swaLiveStart}..${snapshot.sourceEnd} -> slots 0..${snapshot.swaSlots - 1}`)}
+    ${highlighted}
+  `;
+}
+
+function drawC4Row(snapshot, tokenInfo) {
+  const y = row.c4;
+  const readyWidth = widthForRange(0, snapshot.c4ReadyTokens, snapshot);
+  const pendingWidth = widthForRange(snapshot.c4ReadyTokens, snapshot.contextLength, snapshot);
+  const highlighted =
+    tokenInfo.c4Slot >= 0
+      ? drawHighlight(
+          tokenInfo.c4Slot * layout.c4Group,
+          (tokenInfo.c4Slot + 1) * layout.c4Group,
+          snapshot,
+          y,
+        )
+      : "";
+
+  return `
+    ${drawRowLabel("C4", "compressed, 4:1", y)}
+    <rect x="${plotLeft}" y="${y}" width="${plotWidth}" height="42" class="ghost-band"></rect>
+    ${readyWidth > 0 ? `<rect x="${plotLeft}" y="${y}" width="${readyWidth}" height="42" class="pool-band c4-band"></rect>` : ""}
+    ${pendingWidth > 0 ? `<rect x="${xForToken(snapshot.c4ReadyTokens, snapshot)}" y="${y}" width="${pendingWidth}" height="42" fill="rgba(242,141,53,0.08)" stroke="#f28d35" stroke-dasharray="7 6"></rect>` : ""}
+    ${drawGroupTicks(snapshot, y, layout.c4Group, 32)}
+    ${drawRangeLabel(plotLeft + 12, y + 28, `ready slots: ${snapshot.c4Slots}`)}
+    ${pendingWidth > 0 ? drawRangeLabel(xForToken(snapshot.c4ReadyTokens, snapshot) + 8, y + 60, "partial group pending") : ""}
+    ${highlighted}
+  `;
+}
+
+function drawC128Row(snapshot, tokenInfo) {
+  const y = row.c128;
+  const readyWidth = widthForRange(0, snapshot.c128ReadyTokens, snapshot);
+  const pendingWidth = widthForRange(snapshot.c128ReadyTokens, snapshot.contextLength, snapshot);
+  const highlighted =
+    tokenInfo.c128Slot >= 0
+      ? drawHighlight(
+          tokenInfo.c128Slot * layout.c128Group,
+          (tokenInfo.c128Slot + 1) * layout.c128Group,
+          snapshot,
+          y,
+        )
+      : "";
+
+  return `
+    ${drawRowLabel("C128", "compressed, 128:1", y)}
+    <rect x="${plotLeft}" y="${y}" width="${plotWidth}" height="42" class="ghost-band"></rect>
+    ${readyWidth > 0 ? `<rect x="${plotLeft}" y="${y}" width="${readyWidth}" height="42" class="pool-band c128-band"></rect>` : ""}
+    ${pendingWidth > 0 ? `<rect x="${xForToken(snapshot.c128ReadyTokens, snapshot)}" y="${y}" width="${pendingWidth}" height="42" fill="rgba(167,109,232,0.08)" stroke="#a76de8" stroke-dasharray="7 6"></rect>` : ""}
+    ${drawGroupTicks(snapshot, y, layout.c128Group, 1)}
+    ${drawRangeLabel(plotLeft + 12, y + 28, `ready slots: ${snapshot.c128Slots}`)}
+    ${pendingWidth > 0 ? drawRangeLabel(xForToken(snapshot.c128ReadyTokens, snapshot) + 8, y + 60, "waiting for full 128-token block") : ""}
+    ${highlighted}
+  `;
+}
+
+function drawPrefixRow(snapshot, match, recovery) {
+  const y = row.prefix;
+  const requestedWidth = widthForRange(0, recovery.requestedMatchLength, snapshot);
+  const safeWidth = widthForRange(0, recovery.safePrefixLength, snapshot);
+  const extendX = xForToken(recovery.extendStart, snapshot);
+  const extendWidth = widthForRange(
+    recovery.extendStart,
+    recovery.extendEnd + 1,
+    snapshot,
+  );
+  const neededTailX = xForToken(match.start, snapshot);
+  const neededTailWidth = widthForRange(match.start, match.end + 1, snapshot);
+  const liveX = xForToken(match.liveStart, snapshot);
+  const labelClass = recovery.isDirectDecodeSafe ? "safe-text" : "danger-text";
+  const label = recovery.isDirectDecodeSafe
+    ? "direct decode safe: EXTEND has no work"
+    : `SGLang backs off: prefix_indices len ${recovery.safePrefixLength}, EXTEND recomputes ${formatRange(recovery.extendStart, recovery.extendEnd)}`;
+
+  return `
+    ${drawRowLabel("SGLang", "safe prefix + EXTEND", y)}
+    <rect x="${plotLeft}" y="${y}" width="${plotWidth}" height="24" fill="#edf1f6" stroke="#cbd4e1"></rect>
+    <rect x="${plotLeft}" y="${y - 5}" width="${requestedWidth}" height="34" fill="rgba(128,139,156,0.16)" stroke="#8b96a8" stroke-width="1.4"></rect>
+    ${safeWidth > 0 ? `<rect x="${plotLeft}" y="${y - 9}" width="${safeWidth}" height="42" fill="rgba(66,184,131,0.18)" stroke="${colors.swaDark}" stroke-width="2"></rect>` : `<line x1="${plotLeft}" y1="${y - 12}" x2="${plotLeft}" y2="${y + 38}" stroke="${colors.swaDark}" stroke-width="3"></line>`}
+    ${extendWidth > 0 ? `<rect x="${extendX}" y="${y - 14}" width="${extendWidth}" height="52" fill="rgba(47,109,246,0.16)" stroke="${colors.blue}" stroke-width="2"></rect>` : ""}
+    <rect x="${neededTailX}" y="${y - 19}" width="${neededTailWidth}" height="62" fill="rgba(213,75,75,0.1)" stroke="${colors.danger}" stroke-width="2" stroke-dasharray="7 6"></rect>
+    <line x1="${liveX}" y1="${y - 20}" x2="${liveX}" y2="${y + 48}" stroke="${colors.swaDark}" stroke-width="2" stroke-dasharray="5 5"></line>
+    ${drawRangeLabel(plotLeft + 10, y + 20, `requested match: 0..${recovery.requestedMatchLength - 1}`)}
+    ${drawRangeLabel(Math.max(plotLeft + 10, extendX + 8), y + 50, extendWidth > 0 ? `EXTEND: ${formatRange(recovery.extendStart, recovery.extendEnd)}` : "EXTEND: empty")}
+    ${drawRangeLabel(Math.max(plotLeft + 10, neededTailX + 8), y - 24, `needed SWA tail: ${formatRange(match.start, match.end)}`)}
+    <text x="${Math.min(liveX + 8, plotLeft + plotWidth - 180)}" y="${y - 45}" class="tiny-label">SWA live starts at ${match.liveStart}</text>
+    <text x="${plotLeft}" y="${y + 74}" class="${labelClass}">${label}</text>
+  `;
+}
+
+function drawTokenProbe(snapshot, tokenInfo) {
+  const tokenX = xForToken(tokenInfo.token, snapshot);
+
+  return `
+    <line x1="${tokenX}" y1="45" x2="${tokenX}" y2="552" class="probe-line"></line>
+    <circle cx="${tokenX}" cy="${row.source + 21}" r="7" class="token-dot"></circle>
+    ${drawRangeLabel(Math.min(tokenX + 10, plotLeft + plotWidth - 95), row.source + 68, `token ${tokenInfo.token}`)}
+    ${drawPoolArrow(tokenX, row.source + 42, tokenInfo.swaSlot, row.swa, colors.swaDark, "SWA")}
+    ${drawPoolArrow(tokenX, row.source + 42, tokenInfo.c4Slot, row.c4, colors.c4Dark, "C4")}
+    ${drawPoolArrow(tokenX, row.source + 42, tokenInfo.c128Slot, row.c128, colors.c128Dark, "C128")}
+  `;
+}
+
+function drawPoolArrow(sourceX, sourceY, slot, targetY, color, name) {
+  if (slot < 0) {
+    return `
+      <line x1="${sourceX}" y1="${targetY - 14}" x2="${sourceX}" y2="${targetY + 12}" class="shadow-line is-missing" stroke="${colors.danger}"></line>
+      <text x="${Math.min(sourceX + 12, plotLeft + plotWidth - 90)}" y="${targetY - 12}" class="danger-text">${name}: -1</text>
+    `;
+  }
+
+  return `<path d="M ${sourceX} ${sourceY} C ${sourceX} ${(sourceY + targetY) / 2}, ${sourceX} ${(sourceY + targetY) / 2}, ${sourceX} ${targetY}" class="shadow-line" stroke="${color}"></path>`;
+}
+
+function drawStateSummary(snapshot, tokenInfo, recovery) {
+  const x = 640;
+  const y = 592;
+  const c4Text = tokenInfo.c4Slot >= 0 ? `C4 slot ${tokenInfo.c4Slot}` : "C4 pending";
+  const c128Text =
+    tokenInfo.c128Slot >= 0 ? `C128 slot ${tokenInfo.c128Slot}` : "C128 pending";
+  const swaText =
+    tokenInfo.swaSlot >= 0 ? `SWA slot ${tokenInfo.swaSlot}` : "SWA released";
+  const secondLine =
+    currentSlideIndex >= 6
+      ? `safe_prefix ${recovery.safePrefixLength}; EXTEND ${formatRange(recovery.extendStart, recovery.extendEnd)}`
+      : `${c4Text}; ${c128Text}`;
+
+  return `
+    <rect x="${x}" y="${y}" width="306" height="56" rx="6" class="state-box"></rect>
+    <text x="${x + 12}" y="${y + 21}" class="mono-label">token ${tokenInfo.token}: ${swaText}</text>
+    <text x="${x + 12}" y="${y + 42}" class="mono-label">${secondLine}</text>
+    <text x="${plotLeft}" y="${y + 21}" class="tiny-label">pool sizes at n=${snapshot.contextLength}: SWA ${snapshot.swaSlots}, C4 ${snapshot.c4Slots}, C128 ${snapshot.c128Slots}</text>
+  `;
+}
+
+function drawRowLabel(name, detail, y) {
+  return `
+    <text x="48" y="${y + 27}" class="axis-label">${name}</text>
+    <text x="48" y="${y + 50}" class="tiny-label">${detail}</text>
+  `;
+}
+
+function drawAxisTicks(snapshot, y) {
+  const ticks = snapshot.visibleEnd === layout.sourceLength ? [0, 128, 896, 1024] : [0, 4, 128, 160];
+  return uniqueNumbers(ticks)
+    .filter((token) => token <= snapshot.visibleEnd)
+    .map((token) => {
+      const x = xForToken(token, snapshot);
+      const textX = token === snapshot.visibleEnd ? x - 26 : x;
+      return `
+        <line x1="${x}" y1="${y + 42}" x2="${x}" y2="${y + 52}" stroke="#7c8797" stroke-width="1"></line>
+        <text x="${textX}" y="${y - 9}" class="tiny-label">${token}</text>
+      `;
+    })
+    .join("");
+}
+
+function drawGroupTicks(snapshot, y, groupSize, labelEverySlots) {
+  const maxSlot = Math.floor(snapshot.visibleEnd / groupSize);
+  let ticks = "";
+
+  for (let slot = 0; slot <= maxSlot; slot += 1) {
+    if (slot % labelEverySlots !== 0 && slot !== maxSlot) {
+      continue;
+    }
+
+    const x = xForToken(slot * groupSize, snapshot);
+    ticks += `<line x1="${x}" y1="${y}" x2="${x}" y2="${y + 42}" stroke="rgba(82,92,112,0.35)" stroke-width="1"></line>`;
+    if (slot < maxSlot) {
+      ticks += `<text x="${x + 5}" y="${y + 27}" class="tiny-label">${slot}</text>`;
+    }
+  }
+
+  return ticks;
+}
+
+function drawRangeLabel(x, y, text) {
+  const width = Math.max(70, text.length * 7.5);
+  const safeX = Math.min(x, plotLeft + plotWidth - width - 6);
+
+  return `
+    <rect x="${safeX - 5}" y="${y - 16}" width="${width}" height="22" rx="4" class="range-label-bg"></rect>
+    <text x="${safeX}" y="${y}" class="tiny-label">${text}</text>
+  `;
+}
+
+function drawHighlight(startToken, endToken, snapshot, y) {
+  const x = xForToken(startToken, snapshot);
+  const width = widthForRange(startToken, endToken, snapshot);
+
+  return `<rect x="${x}" y="${y}" width="${Math.max(width, 6)}" height="42" class="highlight-rect"></rect>`;
+}
+
+function xForToken(token, snapshot) {
+  return plotLeft + (clamp(token, 0, snapshot.visibleEnd) / snapshot.visibleEnd) * plotWidth;
+}
+
+function widthForRange(startToken, endToken, snapshot) {
+  if (endToken <= startToken) {
+    return 0;
+  }
+
+  return Math.max(
+    3,
+    xForToken(endToken, snapshot) - xForToken(startToken, snapshot),
+  );
+}
+
+function clamp(value, min, max) {
+  return Math.min(Math.max(Number(value), min), max);
+}
+
+function uniqueNumbers(values) {
+  return [...new Set(values)];
+}
+
+function formatRange(start, end) {
+  return end >= start ? `${start}..${end}` : "empty";
+}
+
+    </script>
+  </body>
+</html>

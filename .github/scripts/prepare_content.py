@@ -114,11 +114,11 @@ def git_commit_date(repo_root: Path, file_path: Path) -> Optional[str]:
 
 def main() -> None:
     repo_root = Path(__file__).resolve().parents[2]
-    src_dir = repo_root / "公开"
+    src_dir = repo_root / "文章"
     dest_dir = repo_root / ".github" / "build-content"
 
     if not src_dir.exists():
-        raise SystemExit("Source folder '公开' not found.")
+        raise SystemExit("Source folder '文章' not found.")
 
     if dest_dir.exists():
         shutil.rmtree(dest_dir)

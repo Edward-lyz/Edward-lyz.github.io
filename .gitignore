@@ -1,4 +1,8 @@
 .DS_Store
+node_modules/
+public/
+.vitepress/cache/
+.vitepress/dist/
 .github/build-content/
 .trash/*
 .makemd/*

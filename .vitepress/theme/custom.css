@@ -1,0 +1,234 @@
+:root {
+  --vp-c-brand-1: #5f5248;
+  --vp-c-brand-2: #4f443b;
+  --vp-c-brand-3: #7a6a5d;
+  --vp-c-brand-soft: rgba(95, 82, 72, 0.08);
+  --vp-c-bg: #f7f3ee;
+  --vp-c-bg-alt: #efe9e1;
+  --vp-c-bg-elv: #fcfaf7;
+  --vp-c-bg-soft: #f3ede6;
+  --vp-c-border: rgba(58, 48, 41, 0.12);
+  --vp-c-divider: rgba(58, 48, 41, 0.12);
+  --vp-c-gutter: rgba(58, 48, 41, 0.08);
+  --vp-c-text-1: #1f1a17;
+  --vp-c-text-2: #4f453f;
+  --vp-c-text-3: #7b7069;
+  --vp-font-family-base: 'Inter', 'SF Pro Text', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --vp-font-family-mono: 'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  --vp-home-hero-name-color: var(--vp-c-text-1);
+  --vp-home-hero-name-background: none;
+  --vp-home-hero-image-background-image: none;
+  --vp-home-hero-image-filter: none;
+}
+
+.dark {
+  --vp-c-brand-1: #b4977f;
+  --vp-c-brand-2: #c1a790;
+  --vp-c-brand-3: #927764;
+  --vp-c-brand-soft: rgba(180, 151, 127, 0.14);
+  --vp-c-bg: #161311;
+  --vp-c-bg-alt: #1d1917;
+  --vp-c-bg-elv: #1a1715;
+  --vp-c-bg-soft: #211c19;
+  --vp-c-border: rgba(207, 192, 178, 0.14);
+  --vp-c-divider: rgba(207, 192, 178, 0.14);
+  --vp-c-gutter: rgba(207, 192, 178, 0.1);
+  --vp-c-text-1: #ede5dc;
+  --vp-c-text-2: #c7bbb0;
+  --vp-c-text-3: #9f948a;
+}
+
+body {
+  text-rendering: optimizeLegibility;
+}
+
+.VPNavBar {
+  border-bottom: 1px solid var(--vp-c-divider);
+  background: color-mix(in srgb, var(--vp-c-bg) 92%, transparent);
+}
+
+.VPNavBar .content,
+.VPNavBar .curtain,
+.VPLocalNav {
+  backdrop-filter: none;
+}
+
+.VPNavBarTitle .title {
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.VPFeature {
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 14px;
+  background: var(--vp-c-bg-elv);
+  box-shadow: none;
+}
+
+.VPButton.brand {
+  border-color: var(--vp-c-brand-1);
+  background-color: var(--vp-c-brand-1);
+}
+
+.VPButton.alt {
+  border-color: var(--vp-c-divider);
+  background-color: transparent;
+}
+
+.vp-doc {
+  font-size: 16px;
+  line-height: 1.92;
+}
+
+.vp-doc h1,
+.vp-doc h2,
+.vp-doc h3 {
+  letter-spacing: -0.025em;
+}
+
+.vp-doc h1 {
+  margin-bottom: 20px;
+  font-size: 2.2rem;
+}
+
+.vp-doc h2 {
+  margin-top: 52px;
+  padding-top: 18px;
+  border-top: 1px solid var(--vp-c-divider);
+}
+
+.vp-doc p,
+.vp-doc li {
+  color: var(--vp-c-text-1);
+}
+
+.vp-doc a {
+  text-underline-offset: 0.18em;
+}
+
+.vp-doc blockquote {
+  margin: 24px 0;
+  border-left: 3px solid var(--vp-c-brand-1);
+  border-radius: 0;
+  background: transparent;
+  padding: 4px 0 4px 18px;
+}
+
+.vp-doc img {
+  border-radius: 10px;
+  box-shadow: none;
+  border: 1px solid var(--vp-c-divider);
+}
+
+.vp-doc table {
+  display: table;
+  width: 100%;
+  font-size: 14px;
+}
+
+.vp-doc div[class*='language-'] {
+  border: 1px solid var(--vp-c-divider);
+  box-shadow: none;
+}
+
+.home-intro {
+  max-width: 760px;
+  padding: 12px 0 8px;
+}
+
+.home-kicker {
+  margin: 0 0 10px;
+  color: var(--vp-c-text-3);
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.home-title {
+  margin: 0;
+  color: var(--vp-c-text-1);
+  font-size: clamp(2rem, 5vw, 3rem);
+  line-height: 1.08;
+  letter-spacing: -0.04em;
+}
+
+.home-lead {
+  margin: 18px 0 0;
+  color: var(--vp-c-text-2);
+  font-size: 18px;
+  line-height: 1.9;
+}
+
+.home-links {
+  margin: 18px 0 0;
+  color: var(--vp-c-text-3);
+}
+
+.home-links a,
+.home-footnote a {
+  color: var(--vp-c-text-1);
+}
+
+.home-footnote {
+  margin-top: 20px;
+  color: var(--vp-c-text-3);
+  font-size: 14px;
+}
+
+.article-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.article-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: baseline;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--vp-c-divider);
+}
+
+.article-list li:first-child {
+  border-top: 1px solid var(--vp-c-divider);
+}
+
+.article-list a {
+  color: var(--vp-c-text-1);
+  font-weight: 520;
+  text-decoration: none;
+}
+
+.article-date {
+  flex: none;
+  color: var(--vp-c-text-3);
+  font-size: 13px;
+}
+
+.VPDocAside .content,
+.VPSidebarItem.level-0 .text {
+  font-size: 13px;
+}
+
+@media (min-width: 960px) {
+  .VPDoc:not(.has-sidebar) .content,
+  .VPDoc.has-aside .content-container {
+    max-width: 820px;
+  }
+}
+
+@media (max-width: 640px) {
+  .article-list li {
+    display: block;
+  }
+
+  .article-date {
+    display: block;
+    margin-top: 6px;
+  }
+
+  .home-lead {
+    font-size: 16px;
+  }
+}

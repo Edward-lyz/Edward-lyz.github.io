@@ -1,0 +1,14 @@
+{
+  "name": "edward-lyz-github-io",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "site:prepare": "python3 .github/scripts/prepare_content.py",
+    "docs:dev": "npm run site:prepare && vitepress dev . --host 127.0.0.1",
+    "docs:build": "npm run site:prepare && vitepress build .",
+    "docs:preview": "vitepress preview . --host 127.0.0.1"
+  },
+  "devDependencies": {
+    "vitepress": "1.6.4"
+  }
+}

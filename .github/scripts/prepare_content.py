@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import html
+import json
 import re
 import shutil
 import subprocess
@@ -235,6 +236,86 @@ def write_public_assets(repo_root: Path, dest_dir: Path) -> None:
     )
 
 
+def write_teach_content(repo_root: Path, dest_dir: Path) -> None:
+    teach_root = repo_root / "teach"
+    if not teach_root.is_dir():
+        raise SystemExit("Teach publication folder 'teach' not found.")
+
+    course_sections: list[tuple[str, str, list[tuple[str, str, str]]]] = []
+    for workspace in sorted(teach_root.iterdir()):
+        if not workspace.is_dir() or workspace.name.startswith("."):
+            continue
+
+        manifest_path = workspace / "course.json"
+        if not manifest_path.is_file():
+            raise SystemExit(f"Teach course manifest not found: {manifest_path}")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        course_title = manifest.get("title")
+        if not isinstance(course_title, str) or not course_title.strip():
+            raise SystemExit(f"Teach course title is invalid: {manifest_path}")
+
+        links: list[tuple[str, str, str]] = []
+        for section_name, label in (("lessons", "课程"), ("references", "参考")):
+            records = manifest.get(section_name)
+            if not isinstance(records, list):
+                raise SystemExit(f"Teach manifest field '{section_name}' is invalid: {manifest_path}")
+            for record in records:
+                if not isinstance(record, dict):
+                    raise SystemExit(f"Teach manifest record is invalid: {manifest_path}")
+                title = record.get("title")
+                relative_path_value = record.get("path")
+                if not isinstance(title, str) or not title.strip() or not isinstance(relative_path_value, str):
+                    raise SystemExit(f"Teach manifest record is incomplete: {manifest_path}")
+                relative_path = Path(relative_path_value)
+                if relative_path.is_absolute() or ".." in relative_path.parts:
+                    raise SystemExit(f"Teach manifest path escapes workspace: {relative_path_value}")
+                if not (workspace / relative_path).is_file():
+                    raise SystemExit(f"Teach manifest target not found: {workspace / relative_path}")
+                route = (Path("teach") / workspace.name / relative_path).as_posix()
+                links.append((title, "/" + quote(route, safe="/"), label))
+
+        if not any(label == "课程" for _, _, label in links):
+            raise SystemExit(f"Teach course has no lessons: {manifest_path}")
+        course_sections.append((course_title, workspace.name, links))
+
+    if not course_sections:
+        raise SystemExit("Teach publication folder contains no courses.")
+
+    shutil.copytree(teach_root, dest_dir / "public" / "teach", dirs_exist_ok=True)
+
+    lines = [
+        "---",
+        "title: 互动课程",
+        "aside: false",
+        "---",
+        "",
+        "# 互动课程",
+        "",
+        "这些课程直接发布原生 HTML，完整保留公式、动画、Quiz 和即时反馈。",
+        "",
+    ]
+    for course_title, workspace_name, links in course_sections:
+        lines.extend(
+            [
+                f"## {html.escape(course_title)}",
+                "",
+                f"<p><code>{html.escape(workspace_name)}</code></p>",
+                "",
+                '<ul class="article-list">',
+            ]
+        )
+        for title, href, label in links:
+            lines.append(
+                f'  <li><a href="{html.escape(href, quote=True)}">{html.escape(title)}</a>'
+                f'<span class="article-date">{label}</span></li>'
+            )
+        lines.extend(["</ul>", ""])
+
+    teach_page = dest_dir / "teach"
+    teach_page.mkdir(parents=True, exist_ok=True)
+    (teach_page / "index.md").write_text("\n".join(lines), encoding="utf-8")
+
+
 def main() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     src_dir = repo_root / "文章"
@@ -279,6 +360,7 @@ def main() -> None:
     write_home_page(dest_dir, articles)
     write_article_index(article_dir, articles)
     write_public_assets(repo_root, dest_dir)
+    write_teach_content(repo_root, dest_dir)
 
 
 if __name__ == "__main__":

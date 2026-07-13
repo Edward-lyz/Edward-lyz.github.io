@@ -69,6 +69,7 @@ export default defineConfig({
   themeConfig: {
     nav: [
       { text: '文章', link: '/文章/' },
+      { text: '课程', link: '/teach/' },
       { text: 'GitHub', link: 'https://github.com/Edward-lyz' }
     ],
     sidebar: {

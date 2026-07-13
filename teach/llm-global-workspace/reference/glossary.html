@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>术语表 — 全局工作空间 / J-space</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+  onload="renderMathInElement(document.body, {delimiters:[{left:'\\[',right:'\\]',display:true},{left:'\\(',right:'\\)',display:false}]})"></script>
+<style>
+  dl.glossary { display: grid; grid-template-columns: max-content 1fr; gap: 0.55rem 1.1rem; margin: 1rem 0 2rem; }
+  dl.glossary dt { font-weight: 700; color: var(--accent); }
+  dl.glossary dd { margin: 0; }
+  dl.glossary .en { font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; color: #6b7280; font-weight: 500; display:block; }
+</style>
+</head>
+<body>
+
+<h1>术语表：全局工作空间与 J-space</h1>
+<p>本课通用词汇。每课首次出现的术语都以此为准。按主题分组，方便速查。</p>
+
+<h2>1. 神经科学与意识背景</h2>
+<dl class="glossary">
+  <dt>全局工作空间理论<span class="en">Global Workspace Theory, GWT</span></dt>
+  <dd>Baars(1988) 提出：大脑是一堆并行、封装、无意识的专家系统；信息进入一个狭窄的共享通道（工作空间）并被<strong>广播</strong>给所有子系统时，才变得“可被意识访问”。本研究的灵感来源。</dd>
+
+  <dt>全局神经元工作空间<span class="en">Global Neuronal Workspace, GNW</span></dt>
+  <dd>Dehaene & Naccache(2001) 给 GWT 的神经科学实现，强调长程神经元的“点火（ignition）”与广播。</dd>
+
+  <dt>访问意识<span class="en">access consciousness</span></dt>
+  <dd>纯功能/计算意义的意识：一个念头若能被<strong>报告、参与推理、指导行为</strong>，就是“可访问的”。论文认为 J-space 支撑的正是这一层。</dd>
+
+  <dt>现象意识<span class="en">phenomenal consciousness</span></dt>
+  <dd>“主观体验/感受”意义的意识（“像什么感觉”）。论文<strong>不声称</strong>对此有结论。</dd>
+
+  <dt>点火<span class="en">ignition</span></dt>
+  <dd>GNW 中信息进入工作空间时的一种突发、竞争性的全局激活。论文观察到部分“竞争接入”，但不确定是否等同于大脑式 ignition。</dd>
+
+  <dt>白熊效应<span class="en">white bear / ironic process</span></dt>
+  <dd>Wegner(1987)：被要求“别想白熊”反而更想。类比：告诉 Claude 别想某概念，它在 J-space 里反而部分点亮。</dd>
+</dl>
+
+<h2>2. Transformer 与可解释性基础</h2>
+<dl class="glossary">
+  <dt>残差流<span class="en">residual stream, \(h_\ell\)</span></dt>
+  <dd>每个 token 位置、逐层累加的隐藏向量，是各层读写信息的“总线”。\(h_\ell\) 表示第 \(\ell\) 层、某位置的残差流向量。</dd>
+
+  <dt>反嵌入矩阵<span class="en">unembedding matrix, \(W_U\)</span></dt>
+  <dd>把最终层残差流映射为词表 logits 的矩阵：\(\text{logits}=W_U\,\text{norm}(h_{\text{final}})\)。</dd>
+
+  <dt>Logit Lens</dt>
+  <dd>把 \(W_U\) <strong>直接</strong>作用到中间层残差流 \(h_\ell\) 上读出词表分布。等价于假设各层共享坐标系（即 J-lens 中令 \(J_\ell=I\)）。中间层常读出乱码。</dd>
+
+  <dt>Tuned Lens</dt>
+  <dd>为每层训练一个线性映射去匹配模型输出分布。目标是<strong>相关性</strong>而非因果，遇到未言语化的中间计算会“跳到答案”。</dd>
+
+  <dt>雅可比矩阵<span class="en">Jacobian</span></dt>
+  <dd>向量值函数的一阶偏导矩阵：\(J_{ij}=\partial f_i/\partial x_j\)。含义是「输入加小扰动 \(\boldsymbol\delta\)，输出大约变 \(J\boldsymbol\delta\)」——多维函数的「导数」。标量导数是它的 \(1\times1\) 特例。这里指"最终层残差流对中间层残差流"的偏导 \(\partial h_{\text{final}}/\partial h_\ell\)，刻画扰动如何线性传播。</dd>
+
+  <dt>VJP（向量-雅可比积）<span class="en">Vector-Jacobian Product</span></dt>
+  <dd>PyTorch 反向传播的基本操作：给定一个 cotangent 向量 \(v\)，一次反向计算 \(v^T J\)（即 \(J\) 的若干行的线性组合），而不用算出完整 \(J\)。注入 one-hot cotangent 就取出 \(J\) 的单独一行。J-lens 拟合每次反向用 \(\texttt{dim\_batch}\) 个 one-hot 并行取 8 行。</dd>
+
+  <dt>叠加假设 / 稀疏框架<span class="en">superposition / sparse frame</span></dt>
+  <dd>模型把远多于维数的特征方向“挤”进激活空间，任一激活是少数特征方向的稀疏组合。J-lens 向量构成其中一个“子框架（subframe）”。</dd>
+
+  <dt>引导向量<span class="en">steering vector</span></dt>
+  <dd>加到残差流上以改变模型行为的方向向量。可用 J-lens 解读其“会让模型想说什么”。</dd>
+</dl>
+
+<h2>3. J-lens 与 J-space 核心</h2>
+<dl class="glossary">
+  <dt>Jacobian Lens<span class="en">J-lens</span></dt>
+  <dd>为每个词表 token 找到“会让模型<strong>未来</strong>更可能说出该 token”的残差流方向。做法：对 future logits 关于激活求雅可比，并跨语料/位置平均：\(J_\ell=\mathbb{E}[\partial h_{\text{final}}/\partial h_\ell]\)，读出为 \(\text{softmax}(W_U\,\text{norm}(J_\ell h_\ell))\)。</dd>
+
+  <dt>J-lens 向量<span class="en">J-lens vector</span></dt>
+  <dd>\(W_U J_\ell\) 的每一行；残差流空间里对应某个词表 token 的一个方向。</dd>
+
+  <dt>J-space</dt>
+  <dd>由 J-lens 向量张成、加稀疏约束（活跃数 \(k\lesssim 25\)）的表征子空间。几何上是“若干 \(k\) 维锥的并”。可言语化表征所在之处；论文认为它扮演“全局工作空间”角色。</dd>
+
+  <dt>J-space 分量 / 坐标<span class="en">J-space component / coordinates</span></dt>
+  <dd>把一个激活用稀疏非负组合的 J-lens 向量去逼近（gradient pursuit），得到的分量即其 J-space 成分，系数即其局部 J-space 坐标。该分量通常 <strong>&lt;10%</strong> 的激活方差。</dd>
+
+  <dt>广播枢纽<span class="en">broadcast hub</span></dt>
+  <dd>J-space 内容沿“深度轴（后续层）”和“位置轴（注意力）”被广泛读取。度量：J-lens 方向的 <strong>MLP gain</strong> 在工作空间层段升到约 10×，普通方向 ≈1。</dd>
+</dl>
+
+<h2>4. 实验方法（因果验证）</h2>
+<dl class="glossary">
+  <dt>记分牌假设<span class="en">scoreboard hypothesis</span></dt>
+  <dd>零假设：J-space 只是<strong>被动记录</strong>别处做出的决定，本身不参与计算。swap/ablation 实验就是为了推翻它。</dd>
+
+  <dt>Swap / 交换干预<span class="en">activation / lens-coordinate patching</span></dt>
+  <dd>读出激活在两个 J-lens 向量上的投影，交换（置换 \(\sigma\)）这两个坐标再写回，保持正交分量不变。若下游答案随之改变，说明是因果读出。</dd>
+
+  <dt>消融<span class="en">ablation</span></dt>
+  <dd>在每个位置移除 J-space 最活跃的内容，其余不动。用于看“没有工作空间时模型还能做什么”。</dd>
+
+  <dt>五大功能属性</dt>
+  <dd>可报告（verbal report）、可调控（directed modulation）、参与内部推理（internal reasoning）、灵活泛化（flexible generalization）、选择性（selectivity：只管高阶而非自动认知）。</dd>
+</dl>
+
+<h2>5. 应用与对齐</h2>
+<dl class="glossary">
+  <dt>评测意识<span class="en">evaluation awareness</span></dt>
+  <dd>模型私下判断“我正在被测试”。可在 J-space 看到 “fake / fictional / scenario”。关掉这些方向，模型的“好行为”部分崩解。</dd>
+
+  <dt>模型有机体<span class="en">model organism</span></dt>
+  <dd>被<strong>刻意训练成 misaligned</strong> 的模型，用作监控方法的测试床（如“暗中写破坏性代码”的模型）。</dd>
+
+  <dt>反事实反思训练<span class="en">counterfactual reflection training</span></dt>
+  <dd>只在“若被打断并要求反思，模型会说什么”上训练，而不训练其实际行为。结果诚实度提升，且 J-space 里 “honest/integrity” 点亮——训练“会说什么”改变了“怎么想”。</dd>
+
+  <dt>草稿纸 / 思维链<span class="en">scratchpad / chain-of-thought</span></dt>
+  <dd>模型<strong>写出来</strong>的中间推理文本。与 J-space 不同：J-space 是<strong>沉默的</strong>、发生在激活里的“心里话”。</dd>
+</dl>
+
+</body>
+</html>

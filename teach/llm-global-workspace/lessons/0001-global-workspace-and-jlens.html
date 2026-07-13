@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 01：全局工作空间与 Jacobian Lens</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+  onload="renderMathInElement(document.body, {delimiters:[{left:'\\[',right:'\\]',display:true},{left:'\\(',right:'\\)',display:false}]})"></script>
+<script defer src="../assets/quiz.js"></script>
+</head>
+<body>
+
+<h1>全局工作空间与 Jacobian Lens（J-lens）</h1>
+
+<!-- ═══════════ 一图流 ═══════════ -->
+<h2>一图流：写入一次，广播多用</h2>
+
+<p>先建立整体图景，再抠细节。点「下一步」走一遍：并行专家 → 写入工作空间 → 广播 → 多处复用 → 消融 → 用 J-lens 读出。</p>
+
+<iframe src="../assets/jspace-broadcast-animation.html" title="全局工作空间 / J-space 一图流动画"
+  style="width:100%; aspect-ratio:3/4; max-height:760px; border:1px solid #332b52; border-radius:8px;" loading="lazy"></iframe>
+
+<!-- ═══════════ 背景 ═══════════ -->
+<h2>1. 背景：我们只能读模型「写出来」的</h2>
+
+<div class="terms">
+<h4>关键术语（完整见 <a href="../reference/glossary.html">术语表</a>）</h4>
+<dl>
+<dt>残差流 \(h_\ell\)</dt><dd>第 \(\ell\) 层某位置逐层累加的隐藏向量，读写信息的总线。</dd>
+<dt>反嵌入 \(W_U\)</dt><dd>把最终层残差流映射为词表 logits 的矩阵。</dd>
+<dt>logit lens</dt><dd>把 \(W_U\) 直接套到中间层残差流上读词表分布。</dd>
+<dt>J-lens</dt><dd>为每个词找到「会让模型未来更可能说它」的残差流方向。</dd>
+<dt>J-space</dt><dd>J-lens 向量张成、加稀疏约束的「可言语化表征」子空间。</dd>
+<dt>GWT</dt><dd>全局工作空间理论：信息进入狭窄共享通道并被广播时才「可被意识访问」。</dd>
+</dl>
+</div>
+
+<p>可解释性有一个根本尴尬：<strong>我们通常只能读模型「写出来」的东西</strong>——输出 token、或者思维链 / 草稿纸（scratchpad）上的文字。但模型大量的推理是<strong>沉默</strong>发生在内部激活里的，从不落到文字上。一个模型可能在心里盘算一个有害计划、或识破了你的安全测试，却只字不提。<span class="citation">[<a href="https://www.anthropic.com/research/global-workspace">Anthropic blog</a>]</span></p>
+
+<p>已有的 <strong>logit lens</strong> 能把中间层残差流投影到词表上，读出「这一层觉得下一个词是什么」。但它有两个局限：</p>
+<ul>
+<li><strong>只读「马上要说的」</strong>，不读「心里想的、未来可能说的」。中间推理步骤未必等于下一个输出 token。</li>
+<li><strong>它假设所有层共享同一套坐标系</strong>，直接把最终层的 \(W_U\) 套到中间层。可模型每层都在改写残差流的含义，于是在靠前的层，logit lens 读出的往往是<strong>无法解释的乱码</strong>。<span class="citation">[<a href="https://transformer-circuits.pub/2026/workspace/index.html">paper §Methods</a>]</span></li>
+</ul>
+
+<p>与此同时，神经科学里有个现成的思想框架——<strong>全局工作空间理论（GWT）</strong>：大脑是一堆并行、封装、无意识的专家系统；只有当一条信息进入一个<strong>狭窄的共享通道（工作空间）</strong>并被<strong>广播</strong>给众多子系统时，它才变得「可被意识访问」——能被报告、被用于推理、被拿去指导行为。<span class="citation">[<a href="https://ccrg.cs.memphis.edu/assets/papers/1988/Baars-A%20Cognitive%20Theory%20of%20Consciousness.pdf">Baars 1988</a>]</span></p>
+
+<p class="key-insight">Anthropic 的问题很直接：<strong>Claude 内部是否自发长出了一个类似「工作空间」的结构？</strong>如果有，我们能不能找到它、读它、甚至干预它？答案是肯定的——他们把这个结构叫 <strong>J-space</strong>，把找到它的方法叫 <strong>Jacobian lens</strong>。</p>
+
+<!-- ═══════════ 创新点 ═══════════ -->
+<h2>2. 创新点及其数学 / 工程依据</h2>
+
+<h3>2.1 创新点一：J-lens —— 读「未来可能说的词」</h3>
+<p>不再问「这个激活马上要输出什么」，而是问「往这个激活方向上推一把，会让模型在<strong>未来</strong>更可能说出哪些词」。</p>
+<p><strong>依据</strong>：把「激活 → 未来输出 logits」这条通路做<strong>一阶线性化</strong>，得到的雅可比矩阵就精确刻画了这种「方向 → 未来言语倾向」的映射。跨大量语料平均，就从「这次碰巧说了」里剥离出「本来就倾向于能说」（verbalizable，而非 verbalized-once）。<span class="citation">[<a href="https://transformer-circuits.pub/2026/workspace/index.html">paper §Methods</a>]</span></p>
+
+<h3>2.2 创新点二：J-space 是个「广播枢纽」</h3>
+<p>这些 J-lens 向量合起来，张成残差流里的一个<strong>稀疏子空间</strong>：任一时刻只有几十个概念活跃（容量 \(k\lesssim 25\)），占总激活方差<strong>不到 10%</strong>。</p>
+<p><strong>依据</strong>：结构上它接线得像广播枢纽——J-lens 方向被下一层 MLP 放大约 <strong>10×</strong>（普通方向≈1×），沿深度轴和注意力（位置）轴都被广泛读取。这正是「一处写入、多处读取」所需的物理布线。<span class="citation">[<a href="https://transformer-circuits.pub/2026/workspace/index.html">paper §broadcast hub</a>]</span></p>
+
+<h3>2.3 创新点三：它是「涌现」的，不是设计的</h3>
+<p>没人给 Claude 编程一个工作空间。它在<strong>预训练</strong>阶段就已出现，post-training 之后还带上了「Claude 的视角」（比如读到危险用药会在 J-space 亮起 “WARNING”）。这暗示：支持「访问意识」的心智工作空间，也许是智能系统解决某类问题时会自然收敛到的<strong>通用解</strong>，而非人脑独有的怪癖。<span class="citation">[<a href="https://www.anthropic.com/research/global-workspace">Anthropic blog</a>]</span></p>
+
+<!-- ═══════════ 公式推导 ═══════════ -->
+<h2>3. 公式推导：从 logit lens 到 J-lens</h2>
+
+<p>目标是逐步推出 J-lens 的读出公式，并说明 logit lens 只是它的一个特例。全程不跳步。</p>
+
+<h3>3.0 数学前置：雅可比矩阵是什么</h3>
+
+<p>标量对标量的导数是一个<strong>数</strong>：\(x\) 动 \(\delta\)，\(f\) 大约变 \(f'(x)\cdot\delta\)。当输入输出都是<strong>向量</strong>时，「导数」变成一个<strong>矩阵</strong>——雅可比矩阵：</p>
+
+<div class="math-block">
+<span class="label">雅可比矩阵：多维函数的一阶线性近似</span>
+\[\mathbf{f}(\mathbf{x}+\boldsymbol\delta) \;\approx\; \mathbf{f}(\mathbf{x}) \;+\; \underbrace{J}_{\text{雅可比}}\,\boldsymbol\delta, \qquad J_{ij}=\frac{\partial f_i}{\partial x_j}\]
+</div>
+
+<div class="derivation">
+<div class="step">
+<span class="step-label">含义</span>
+\(J\) 的第 \(i\) 行第 \(j\) 列 = 「第 \(i\) 个输出对第 \(j\) 个输入的偏导」。整个矩阵完整描述了：<strong>输入空间的一个小扰动 \(\boldsymbol\delta\)，经过函数 \(\mathbf{f}\) 后，在输出空间变成了什么方向、什么幅度</strong>。标量导数是它的 \(1\times1\) 特例。
+</div>
+<div class="step">
+<span class="step-label">一个 \(2\to2\) 的具体例子</span>
+\(\mathbf{f}(x_1,x_2)=(x_1^2+x_2,\;3x_1 x_2)\)。雅可比：
+\[J=\begin{pmatrix}2x_1 & 1\\ 3x_2 & 3x_1\end{pmatrix}\]
+在 \((2,1)\) 处：\(J=\begin{pmatrix}4&1\\3&6\end{pmatrix}\)。加扰动 \(\boldsymbol\delta=(0.01,0.01)\)：<br>
+线性近似变化 = \(J\boldsymbol\delta=(0.05,\;0.09)\)。<br>
+精确变化 = \(\mathbf{f}(2.01,1.01)-\mathbf{f}(2,1)=(0.0501,\;0.0903)\)。差别是二阶小量——一阶近似足够精确。
+</div>
+<div class="step">
+<span class="step-label">回到 Transformer：\(J_\ell\) 就是个雅可比</span>
+第 \(\ell\) 层到最终层是一个函数 \(\mathbf{g}:\mathbb{R}^{d_{model}}\to\mathbb{R}^{d_{model}}\)（若干层 attention+MLP 的复合）。它的雅可比 \(\partial h_{final}/\partial h_\ell\) 就精确告诉你：在第 \(\ell\) 层加一个方向 \(\boldsymbol\delta\)，最终层大约变 \(J_\ell\boldsymbol\delta\)。再乘反嵌入 \(W_U\) 就知道这个扰动「倾向于让模型说哪些词」。唯一额外步骤：这个雅可比随 prompt/位置不同而不同（因为 attention 模式变化），所以跨语料平均一下。
+</div>
+</div>
+
+<table>
+<caption style="font-size:0.8rem;color:#6b7280;text-align:left;margin-bottom:0.3rem;">表：标量导数 vs 雅可比矩阵</caption>
+<tr><th></th><th>标量导数 \(f'(x)\)</th><th>雅可比矩阵 \(J\)</th></tr>
+<tr><td>形状</td><td>一个数</td><td>\(m\times n\) 矩阵</td></tr>
+<tr><td>含义</td><td>输入动 \(\delta\) → 输出动 \(f'\delta\)</td><td>输入动 \(\boldsymbol\delta\) → 输出动 \(J\boldsymbol\delta\)</td></tr>
+<tr><td>几何</td><td>放大/缩小</td><td>旋转 + 拉伸 + 剪切</td></tr>
+</table>
+
+<h3>3.1 记号与基线（logit lens）</h3>
+<div class="math-block">
+<span class="label">Logit lens 读出</span>
+\[\text{logitlens}(h_\ell) \;=\; \text{softmax}\big(W_U\,\text{norm}(h_\ell)\big)\]
+</div>
+<div class="derivation">
+<div class="step">
+<span class="step-label">这一步做了什么</span>
+把第 \(\ell\) 层的残差流 \(h_\ell\) 归一化后，直接乘反嵌入矩阵 \(W_U\)，再 softmax，得到一个词表分布。
+</div>
+<div class="step">
+<span class="step-label">为什么它在中间层失效</span>
+\(W_U\) 是为<strong>最终层</strong>训练的读出头。直接套到中间层，等于假设「第 \(\ell\) 层和最终层用同一套坐标系」。但每一层的 attention/MLP 都在旋转、改写残差流的语义坐标，所以越靠前，这个假设越不成立，读出越像乱码。<span class="citation">[<a href="https://transformer-circuits.pub/2026/workspace/index.html">paper</a>]</span>
+</div>
+</div>
+
+<h3>3.2 换一个问题：小扰动如何传播到未来输出</h3>
+<p>给位置 \(t\) 的激活 \(h_{\ell,t}\) 加一个小扰动 \(\delta\)。它会顺着后续层往前传，改变最终层在<strong>所有 \(t'\ge t\) 位置</strong>的残差流 \(h_{\text{final},t'}\)。</p>
+<div class="derivation">
+<div class="step">
+<span class="step-label">为什么只影响 \(t'\ge t\)</span>
+因果注意力（causal attention）只允许信息从早位置流向晚位置。所以位置 \(t\) 的扰动只能波及 \(t\) 及其之后的位置，动不了 \(t\) 之前的。
+</div>
+</div>
+
+<h3>3.3 一阶线性化 —— Jacobian 登场</h3>
+<div class="math-block">
+<span class="label">一阶泰勒近似</span>
+\[\Delta h_{\text{final},t'} \;\approx\; \underbrace{\frac{\partial h_{\text{final},t'}}{\partial h_{\ell,t}}}_{\text{Jacobian}}\;\delta\]
+</div>
+<div class="derivation">
+<div class="step">
+<span class="step-label">这一步做了什么</span>
+对「\(h_{\ell,t}\) → \(h_{\text{final},t'}\)」这个（高度非线性的）多层函数，在当前激活点做一阶泰勒展开。小扰动的主导效应是线性的，其系数矩阵就是<strong>雅可比矩阵</strong>，形状 \(d_{\text{model}}\times d_{\text{model}}\)。
+</div>
+<div class="step">
+<span class="step-label">为什么可以这么做</span>
+我们只关心「往某方向推一小步」的效应方向，一阶项就是主导项。这也是它叫「lens（透镜）」而非精确复现的原因——它是一个<strong>受控的线性近似</strong>，不假装等于真实的多层前传。
+</div>
+</div>
+
+<h3>3.4 组合反嵌入：得到「对未来 logits 的影响」</h3>
+<p>最终层残差流再经 \(\text{norm}\) 和 \(W_U\) 变成 logits。所以扰动 \(\delta\) 对位置 \(t'\) 输出 logits 的一阶影响是 \(W_U\,\dfrac{\partial h_{\text{final},t'}}{\partial h_{\ell,t}}\,\delta\)。直觉：<strong>它告诉我们「往激活里加某个方向，会把哪些词的未来 logit 顶上去」</strong>。</p>
+
+<h3>3.5 跨语料 / 位置平均：剥离「一般倾向」</h3>
+<div class="math-block">
+<span class="label">J-lens 的核心：平均雅可比</span>
+\[J_\ell \;=\; \mathbb{E}_{\,t,\;t'\ge t,\;\text{prompt}}\left[\frac{\partial h_{\text{final},t'}}{\partial h_{\ell,t}}\right]\]
+</div>
+<div class="derivation">
+<div class="step">
+<span class="step-label">为什么要平均</span>
+单条 prompt 的雅可比混了两样东西：模型对某概念的<strong>一般言语化倾向</strong>，和该概念<strong>在此刻这段上下文里的特定用途</strong>。我们只想要前者。
+</div>
+<div class="step">
+<span class="step-label">平均在谁身上取</span>
+源位置 \(t\)、所有未来位置 \(t'\ge t\)、以及约 <strong>1000 条</strong>类预训练分布的 prompt。上下文相关的特定用途在大规模平均里被「洗掉」，留下跨情境稳定的倾向。<span class="citation">[<a href="https://transformer-circuits.pub/2026/workspace/index.html">paper §Methods</a>]</span>
+</div>
+<div class="step">
+<span class="step-label">结果的形状与含义</span>
+每层一个 \(d_{\text{model}}\times d_{\text{model}}\) 矩阵 \(J_\ell\)，作用是把「源层 \(\ell\) 的方向」映射到「最终层的对应方向」。它就是那个<strong>把中间层坐标系校正到最终层坐标系的平均线性映射</strong>。
+</div>
+</div>
+
+<h3>3.6 读出公式</h3>
+<div class="math-block">
+<span class="label">J-lens 读出</span>
+\[\text{lens}(h_\ell) \;=\; \text{softmax}\big(W_U\,\text{norm}(J_\ell\, h_\ell)\big)\]
+</div>
+<div class="derivation">
+<div class="step">
+<span class="step-label">怎么理解</span>
+用 lens 读一个激活，等价于<strong>把 \(\ell\) 之后的所有层，替换成单一线性映射 \(J_\ell\)</strong>，再走模型自己的反嵌入（norm 后乘 \(W_U\)）。对词表每个 token 得一个分数，取 top-k 就是该激活此刻「在 J-space 里的内容」——一串可读的词。
+</div>
+</div>
+
+<h3>3.7 J-lens 向量，与 logit lens 的统一</h3>
+<div class="math-block">
+<span class="label">J-lens 向量 = \(W_U J_\ell\) 的行；logit lens 是 \(J_\ell=I\) 的特例</span>
+\[\text{J-lens 向量}_v \;=\; \big(W_U J_\ell\big)_{v,:}\qquad\qquad J_\ell = I \;\Rightarrow\; \text{lens}=\text{logitlens}\]
+</div>
+<div class="derivation">
+<div class="step">
+<span class="step-label">J-lens 向量是什么</span>
+矩阵 \(W_U J_\ell\) 的第 \(v\) 行，是残差流空间里一个方向，对应词表 token \(v\)。激活在这个方向上的投影越大 ⇒ 词 \(v\) 越「在心里」。
+</div>
+<div class="step">
+<span class="step-label">与 logit lens 的关系（关键统一）</span>
+在读出公式里令 \(J_\ell=I\)（恒等矩阵），立刻退化为 \(\text{softmax}(W_U\,\text{norm}(h_\ell))\)，正是 logit lens。所以 <strong>logit lens = J-lens 在「假装各层同坐标系」下的特例</strong>；而 \(J_\ell\) 正是那个本该做的坐标校正。这也解释了：两者在最后几层趋同（那里 \(J_\ell\approx I\)），在靠前的层分道扬镳（J-lens 仍可读，logit lens 已是乱码）。<span class="citation">[<a href="https://transformer-circuits.pub/2026/workspace/index.html">paper §Comparison</a>]</span>
+</div>
+</div>
+
+<p class="note">代码视角（<a href="https://github.com/anthropics/jacobian-lens">anthropics/jacobian-lens</a>）：一句话就是 <code>lens_l(h) = unembed(J_l @ h)</code>，其中 <code>J_l = E[∂h_final/∂h_l]</code>，期望在 prompt、源位置、以及所有当前+未来目标位置上取。论文用 1000 条 128-token 序列拟合，约 100 条也够用。</p>
+
+<!-- ═══════════ JL 拟合 ═══════════ -->
+<h2>4. 「JL 矩阵」是怎么拟合出来的（注意：不是 SGD 训练）</h2>
+
+<p>先破一个误解：\(J_\ell\) <strong>不是用梯度下降“训练”出来的</strong>——那是 tuned lens 的做法（学一个线性层去匹配输出分布，目标是相关性）。\(J_\ell\) 是<strong>模型自己反向传播算出的精确雅可比，在语料上取经验平均</strong>：没有可学习参数、没有损失函数、没有优化器。<span class="citation">[<a href="https://github.com/anthropics/jacobian-lens/blob/main/jlens/fitting.py">jlens/fitting.py</a>]</span></p>
+
+<h3>4.1 估计量：一次前向 + 若干次反向（VJP）</h3>
+
+<p>先用一个<strong>极简数值例子</strong>把操作落到实处，再给论文公式。</p>
+
+<h3>4.1.1 玩具示例：d_model=4、3 层、1 条 prompt</h3>
+
+<p>假设玩具模型 <code>d_model=4</code>，3 层（第 0/1/2 层，第 2 层 = 最终层）。要求 \(J_0\)（第 0 层→最终层的映射）。</p>
+
+<div class="derivation">
+<div class="step">
+<span class="step-label">Step 1：前向传播（保留计算图）</span>
+喂 prompt，得到各层残差流。标记 \(h_0\) 为 autograd 叶节点：
+<pre><code>h0 = layer_0(input_embeds)   # [seq_len, 4]
+h1 = layer_1(h0)             # [seq_len, 4]
+h_final = layer_2(h1)        # [seq_len, 4] ← 目标
+h0.requires_grad_(True)      # 标记叶节点</code></pre>
+</div>
+<div class="step">
+<span class="step-label">Step 2：反向——不是对 loss！是对 \(h_{final}\) 的第 0 维</span>
+问：「\(h_{final}\) 的<strong>第 0 个维度</strong>关于 \(h_0\) 的梯度是多少？」
+<pre><code># 在"所有位置"的"第 0 维"注入 cotangent = 1
+cotangent = zeros_like(h_final)   # [seq_len, 4]
+cotangent[:, 0] = 1.0             # 只在第 0 维放 1
+
+grad_h0 = autograd.grad(
+    outputs=h_final,
+    inputs=h0,
+    grad_outputs=cotangent,       # ← VJP 的 "v"
+    retain_graph=True,
+)[0]                              # 结果 [seq_len, 4]</code></pre>
+对位置 \(p\)，<code>grad_h0[p, :]</code> = \(\sum_{p'\ge p}\partial h_{final}[p',0]/\partial h_0[p,:]\)。<br>
+即：\(h_0\) 在位置 \(p\) 的 4 个维度各自动一点，对 \(h_{final}\) 第 0 维在所有后续位置的<strong>总效应</strong>。
+</div>
+<div class="step">
+<span class="step-label">Step 3：对位置取均值 → \(J_0\) 的第 0 行</span>
+<pre><code>row_0 = grad_h0.mean(dim=0)   # [4] ← J_0 的第 0 行</code></pre>
+</div>
+<div class="step">
+<span class="step-label">Step 4：重复 4 次（每次换一个输出维度注入 cotangent）→ 完整 \(J_0\)</span>
+<pre><code>J_0 = zeros(4, 4)
+for dim in range(4):
+    cotangent = zeros_like(h_final)
+    cotangent[:, dim] = 1.0
+    grad = autograd.grad(h_final, h0, cotangent, retain_graph=True)[0]
+    J_0[dim, :] = grad.mean(dim=0)   # 第 dim 行</code></pre>
+做完后 \(J_0\) 就是 \(4\times4\) 矩阵。<strong>没有任何"学习"——纯粹是模型已有计算图的测量。</strong>
+</div>
+<div class="step">
+<span class="step-label">Step 5：跨 \(\sim1000\) 条 prompt 取平均</span>
+<pre><code>J_0_total = zeros(4, 4)
+for prompt in prompts:
+    J_0_total += compute_jacobian(prompt)  # Step 1-4
+J_0_total /= len(prompts)                 # running mean → 最终 J_0</code></pre>
+跨语料平均把「这次碰巧用到」洗掉，留下「一般性地倾向于可说」的稳定布线。
+</div>
+</div>
+
+<p class="key-insight"><strong>全流程不涉及任何 loss / optimizer / parameter update。</strong>是一个「闭式测量 + 统计平均」的过程。</p>
+
+<h3>4.1.2 论文的正式估计量（等同上面，只是加了工程优化）</h3>
+<div class="math-block">
+<span class="label">论文用的估计量（对每条 prompt 算，再跨 prompt 取 running mean）</span>
+\[J_\ell \;=\; \underbrace{\mathbb{E}_{\text{prompt}}}_{\text{running mean}}\ \Big[\ \operatorname*{mean}_{p}\ \sum_{p'\ge p}\ \frac{\partial h_{\text{final},p'}}{\partial h_{\ell,p}}\ \Big]\]
+</div>
+<div class="derivation">
+<div class="step">
+<span class="step-label">怎么算：反向模式 VJP，注入 cotangent</span>
+对一条 prompt 做<strong>一次前向</strong>（把序列沿 batch 维复制 \(\texttt{dim\_batch}=8\) 份、保留计算图），再做 \(\lceil d_{\text{model}}/\texttt{dim\_batch}\rceil\) 次反向。第 \(b\) 个 batch 元素在<strong>输出维度</strong> \((\text{dim\_start}+b)\) 注入 one-hot cotangent，位置铺在<strong>所有 valid 目标位置</strong>上；一次反向就取回 \(J_\ell\) 的 \(\texttt{dim\_batch}\) 行。
+</div>
+<div class="step">
+<span class="step-label">为什么算得起（关键工程点）</span>
+cotangent 注入在 \(h_{\text{final}}\) 的 \(d_{\text{model}}\) 维空间，<strong>不是</strong>词表空间。所以反向次数是 \(\sim d_{\text{model}}\)（几千次、\(\times8\) 批处理）而非 \(\sim d_{\text{vocab}}\)（十万级）。unembed 的 \(W_U\) 是<strong>读出时</strong>才乘（\(\text{unembed}(J_\ell h)\)），不进拟合。
+</div>
+<div class="step">
+<span class="step-label">位置掩码：为什么跳掉一些位置</span>
+跳过<strong>前 16 个</strong>位置（\(\texttt{SKIP\_FIRST\_N\_POSITIONS}=16\)，它们是 attention sink，残差统计异常）；跳过<strong>最后一个</strong>位置（没有“下一个 token”目标）。剩下的 valid 源位置 \(p\) 上求均值。
+</div>
+<div class="step">
+<span class="step-label">跨 prompt 与分布式：running mean + merge</span>
+每条 prompt 的雅可比累积成<strong>运行平均</strong>。多机时各自跑<strong>不相交的 prompt 分片</strong>，再用 \(n_{\text{prompts}}\) 加权平均合并（\(\texttt{JacobianLens.merge}\)）。规模：论文 1000 条 \(\times\) 128 token，但质量很快饱和，约 100 条就够用；成本几乎全在反向传播。
+</div>
+</div>
+
+<pre><code>lens_l(h) = unembed(J_l @ h)          # 读出：一次线性 transport + 模型自己的反嵌入
+J_l       = E[ d h_final / d h_l ]    # 期望在 prompt、源位置 p、以及所有 p'>=p 目标位置上
+apply(..., use_jacobian=False)        # 关掉 transport ⇒ 就是 vanilla logit lens（即 J_l = I）</code></pre>
+
+<p class="note">\(J_\ell\) 每层一个 \(d_{\text{model}}\times d_{\text{model}}\) 矩阵、存 fp16。它是用当前前向的<strong>真实注意力模式</strong>做的局部线性化（论文另有"冻结注意力"变体，结论稳健）。一句话：<strong>J-lens 的"拟合" = 把模型自己的 backward 在语料上平均，是闭式估计而非训练。</strong></p>
+
+<h3>4.2 用起来：读出 = 一次矩阵乘（推理时完全不用反向传播）</h3>
+<pre><code># 拟合好的 J_ell 存成 fp16，推理时加载即用
+transported = J_ell @ h_ell              # [d_model] → [d_model]  校正到最终层坐标系
+logits = W_U @ normalize(transported)    # [vocab_size]  用模型自己的反嵌入
+top_words = logits.topk(10)              # 这就是"心里的词"</code></pre>
+<p>一次矩阵乘 + 一次 unembedding，和 logit lens 的唯一区别就是多了个 \(J_\ell@\) 前缀。</p>
+
+<!-- ═══════════ 消融 ═══════════ -->
+<h2>5. 怎么"删除 J-space"做对比实验（消融）</h2>
+
+<p>swap 是操纵<strong>单个</strong>概念向量证明因果；消融（ablation）则<strong>整体</strong>抹掉 J-space，回答"没有工作空间时，模型还剩什么能力"——从而定位 J-space 到底负责哪些认知。<span class="citation">[<a href="https://transformer-circuits.pub/2026/workspace/index.html">paper §ablation</a>]</span></p>
+
+<h3>5.1 先建立直觉：swap（单概念干预）是怎么做的</h3>
+
+<p>在讲「整体删除」之前，先用一个具体例子说清「操纵单个概念」怎么操作——这是消融的积木。</p>
+
+<p><strong>场景</strong>（论文原例）：prompt =「会织网的动物有几条腿？」。模型正确输出 8。J-lens 在中间层读出 top-1 = <code>spider</code>（心里想的，从未出现在文本中）。</p>
+
+<div class="derivation">
+<div class="step">
+<span class="step-label">Step 1：拿到 J-lens 向量</span>
+从已拟合的 \(J_\ell\) 出发，<code>spider</code> 对应的 J-lens 向量 = \((W_U J_\ell)_{\text{spider},:}\)，归一化后记为 \(\mathbf{v}_{\text{spider}}\)。同理拿到 \(\mathbf{v}_{\text{ant}}\)。这两个都是 \(d_{model}\) 维方向。
+</div>
+<div class="step">
+<span class="step-label">Step 2：读出当前激活在这两个方向上的坐标</span>
+<pre><code>h = residual_stream[layer][position]          # 当前激活 [d_model]
+coord_spider = dot(h, v_spider)               # h 在 spider 方向的投影长度
+coord_ant    = dot(h, v_ant)                  # h 在 ant 方向的投影长度</code></pre>
+比如读出 <code>coord_spider = 3.2</code>，<code>coord_ant = 0.1</code>（spider 活跃、ant 几乎不活跃）。
+</div>
+<div class="step">
+<span class="step-label">Step 3：swap = 交换这两个坐标，写回</span>
+<pre><code># 把 spider 分量去掉，换成 ant 的强度；反之亦然
+h_new = h
+h_new = h_new - coord_spider * v_spider + coord_ant * v_spider   # spider 位置放 ant 的幅度
+h_new = h_new - coord_ant * v_ant + coord_spider * v_ant         # ant 位置放 spider 的幅度
+# 等价于：在 {v_spider, v_ant} 张成的 2D 子空间内做了一个置换 σ
+# 正交于这两个方向的所有分量完全不动</code></pre>
+</div>
+<div class="step">
+<span class="step-label">Step 4：让前向继续跑 → 观察结果</span>
+写回 <code>h_new</code>，继续跑后续层。输出从 <strong>8 变成 6</strong>（蚂蚁的腿数）。<br>
+含义：下游「数腿」模块真的从 J-space 读取了「是什么动物」这个信息 → J-space 是<strong>因果读出</strong>，不是被动记分牌。如果只是记分牌，编辑它不会改变答案。
+</div>
+</div>
+
+<p class="key-insight"><strong>Swap 的逻辑链</strong>：读坐标 → 交换 → 写回 → 答案跟着变 → 因果，不只是相关。正交分量不动 → 干预是最小化的，不是大范围破坏。</p>
+
+<h3>5.2 形式定义：什么是「J-space 分量」</h3>
+<div class="math-block">
+<span class="label">激活 x 的 J-space 分量与"非 J-space"残余</span>
+\[\Pi_S x \;=\; \text{J-space 分量},\qquad S=\operatorname*{arg\,min}_{|S|=k}\big\lVert x-\Pi_S x\big\rVert,\qquad x-\Pi_S x \;=\; \text{非 J-space 残余}\]
+</div>
+<div class="derivation">
+<div class="step">
+<span class="step-label">为什么不是普通子空间</span>
+J-lens 向量有 \(n_{\text{vocab}}\) 个（十万级），但残差流只有 \(d_{\text{model}}\) 维（几千）。向量数 &gt; 维数 → 它们<strong>过完备</strong>，合起来能张满整个空间——不存在一个「固定子空间」叫 J-space。
+</div>
+<div class="step">
+<span class="step-label">稀疏约束才定义了 J-space</span>
+约束条件：只允许用<strong>至多 \(k\) 个</strong>（\(k\approx 10\sim25\)）J-lens 向量的<strong>非负</strong>组合来逼近 \(x\)。在这个约束下，\(\Pi_S x\) 是到「\(k\) 个最佳方向张成的子空间」的正交投影。几何上 J-space = 一堆 \(k\) 维锥的并集。
+</div>
+<div class="step">
+<span class="step-label">用 d_model=4 的玩具例子说清楚</span>
+假设词表只有 6 个 token，J-lens 向量（4 维）：
+<pre><code>v_cat    = [0.9, 0.1, 0.0, 0.0]
+v_dog    = [0.1, 0.9, 0.0, 0.0]
+v_spider = [0.0, 0.0, 0.9, 0.1]
+v_ant    = [0.0, 0.0, 0.1, 0.9]
+v_red    = [0.5, 0.0, 0.5, 0.0]
+v_blue   = [0.0, 0.5, 0.0, 0.5]</code></pre>
+6 个向量 &gt; 4 维 → 过完备，线性相关，合起来张满 \(\mathbb{R}^4\)。<br><br>
+当前激活 \(x = [0.0, 0.0, 3.6, 0.5]\)。设 \(k=2\)（只许用 2 个向量）：
+<pre><code># 试所有 C(6,2)=15 种组合，找投影残差最小的那组
+# 最佳组合：S = {v_spider, v_ant}
+# 在这两个方向上投影：
+coord_spider = dot(x, normalize(v_spider)) ≈ 3.6   （强）
+coord_ant    = dot(x, normalize(v_ant))    ≈ 0.9   （弱）
+Π_S(x) ≈ 3.6 * v_spider_norm + 0.9 * v_ant_norm    # J-space 分量
+残余   = x - Π_S(x)                                  # 非 J-space 部分（很小）</code></pre>
+J-space 分量的含义：<strong>这个激活主要在「spider + 一点 ant」的概念方向上</strong>，占了大部分能量。
+</div>
+</div>
+
+<h3>5.3 消融 = 把 J-space 分量清零（整体删除）</h3>
+
+<p>Swap 是换一个概念；消融是<strong>全部清零</strong>——把工作空间里正在想的东西<strong>全部擦掉</strong>，只保留非 J-space 残余，看模型还能做什么。</p>
+
+<div class="derivation">
+<div class="step">
+<span class="step-label">操作（伪代码）</span>
+<pre><code>for position in all_positions:
+    for layer in ablation_layer_range:          # 比如第 12~36 层
+        h = residual_stream[layer][position]    # 当前激活
+        
+        # 1. 找 top-k=10 个最活跃的 J-lens 方向
+        scores = [dot(h, v_i) for v_i in all_jlens_vectors]
+        top10_indices = argsort(scores)[-10:]
+        
+        # 2. Confound 控制：排除"模型本来就要说的词"
+        clean_output_top10 = get_clean_forward_top10(position)
+        top10_indices = [i for i in top10_indices 
+                         if i not in clean_output_top10]
+        
+        # 3. 投影清零
+        for i in top10_indices:
+            projection = dot(h, v_i) * v_i     # h 在方向 v_i 上的分量
+            h = h - projection                  # 减掉 → 清零该方向
+        
+        residual_stream[layer][position] = h    # 写回</code></pre>
+</div>
+<div class="step">
+<span class="step-label">用刚才的玩具例子走一遍</span>
+\(x=[0.0,0.0,3.6,0.5]\)，top-2 活跃方向是 <code>spider</code> 和 <code>ant</code>。
+<pre><code>x = [0.0, 0.0, 3.6, 0.5]
+# 减掉 spider 方向的投影
+x = x - dot(x, v_spider_norm) * v_spider_norm
+#   ≈ [0.0, 0.0, 3.6, 0.5] - 3.6 * [0, 0, 0.99, 0.11]
+#   ≈ [0.0, 0.0, 0.04, 0.10]
+# 再减掉 ant 方向的投影
+x = x - dot(x, v_ant_norm) * v_ant_norm
+#   ≈ [0.0, 0.0, 0.03, 0.01]    ← 几乎为零向量</code></pre>
+原来 <code>spider</code> 概念很强（3.6）→ 消融后几乎没了。残余是正交噪声。<br>
+如果模型要回答「几条腿」依赖于 J-space 里的 <code>spider</code>，消融后它就答不对了——只能退回通用先验。
+</div>
+<div class="step">
+<span class="step-label">Confound 控制为什么关键——再用例子</span>
+假设模型的下一个输出 token 就是 <code>spider</code>（它正准备把这个词说出口）。如果不排除，你把 <code>spider</code> 方向清零了：
+<ul>
+<li>模型说不出 <code>spider</code> 了 ← 但这不能证明 J-space 管「思考」，只能说你破坏了「发言」。</li>
+</ul>
+排除后：
+<ul>
+<li>模型照样能说出 <code>spider</code>（因为你没碰它的 output 通道）。</li>
+<li>但内部「用 spider 这个概念做推理」的能力被干掉了——答案从 8 变成乱猜。</li>
+</ul>
+<strong>这样才能精确归因：损伤来自「失去了沉默思考」而非「失去了说话能力」。</strong>
+</div>
+</div>
+
+<h3>5.4 三档强度 + 随机对照</h3>
+<table>
+<tr><th>档位</th><th>消融层区间</th><th>效果</th></tr>
+<tr><td>light</td><td>工作空间 onset 附近的窄带（~5 层）</td><td>multihop 下降但不为零</td></tr>
+<tr><td>medium</td><td>工作空间核心段（~15 层）</td><td>multihop 大幅下降</td></tr>
+<tr><td>heavy</td><td>几乎全覆盖（~30 层）</td><td>multihop → ≈ 0</td></tr>
+<tr><td>对照：medium 范围消融<strong>随机方向</strong></td><td>同 medium</td><td>几乎无影响</td></tr>
+</table>
+<p>随机方向对照排除了「抹掉任意 10 个方向都会坏」的平凡解释——损伤是<strong>特指 J-lens 方向</strong>的。</p>
+
+<h3>5.5 结果：有针对性地砍掉"高阶认知"</h3>
+<ul>
+<li><strong>阳性对照</strong>：multi-hop 推理任务（干净时接近满分）→ 消融后大跌，<strong>heavy 档接近 0</strong>。</li>
+<li><strong>无偏画面</strong>：在预训练语料上，大多数位置 next-token 几乎不变（top-1 一致率高）——消融是<strong>有选择性的</strong>。流利文本预测照旧，只有那些依赖"沉默组装的抽象上下文推断"（论文主题、演讲的历史背景、物种命名者国籍、成像是诊断还是物理框架）会退回<strong>通用先验</strong>。</li>
+<li><strong>论文里的具体例子</strong>：一段临床论文，干净模型能预测出特定疾病名（因为它在 J-space 里沉默地识别出了论文的主题领域）；消融后变成一个通用的医学词——流利，但失去了精确上下文判断。</li>
+</ul>
+<p class="key-insight">一句话总结消融的逻辑链：<strong>找到活跃方向 → 排除 confound（不碰输出通道）→ 投影清零 → 让前向继续跑 → 多步推理坏了而流利不变 → 工作空间只管高阶认知。</strong></p>
+
+<!-- ═══════════ 第一性原理与发散 ═══════════ -->
+<h2>6. 第一性原理与发散</h2>
+
+<h3>6.1 第一性原理：J-lens 到底做了什么（顺带纠偏一个常见说法）</h3>
+<p>你的直觉方向是对的——J-lens 把“隐藏状态 → token”的映射<strong>显式化、线性化</strong>了。但要精确两点：</p>
+<ul>
+<li>它是<strong>每层一个</strong> \(J_\ell\)，<strong>不是</strong>把所有层“汇总成一个矩阵”。每层的 \(J_\ell\) 只把<strong>该层</strong>残差校正到最终层坐标系再 unembed。</li>
+<li>真正的“汇总”发生在两处：<strong>层内</strong>——对位置/上下文平均，得到跨情境稳定的“言语化倾向”；<strong>层间</strong>——把不同层的读出并排看，会看到 token 信息随深度演化（前 1/3 层是噪声 → 中段是抽象概念/推理步骤=工作空间 → 末段翻转成“马上要输出的词”，即 motor regime）。</li>
+</ul>
+<p>被 J-lens 坐实的关键事实：<strong>单独一层的隐藏状态并不在输出坐标系里</strong>（所以 logit lens 中间层失败、需要 \(J_\ell\) 校正），而且<strong>不同层携带互补的、不同分辨率的“未来 token”信号</strong>。这两点直接连到投机解码。</p>
+
+<h3>6.2 为什么 EAGLE3 抽多层 hidden state concat 能提高接受率</h3>
+<p>EAGLE 只用最后一层 \(\mathbf{f}_L\)；EAGLE3 抽多层拼接再投影：\(\mathbf{f}_{\text{ctx}}=[h_{l_1};\dots;h_{l_5}]\xrightarrow{W_{\text{fc}}}\mathbb{R}^{d}\)（Qwen3-4B 取层 \([1,9,17,25,33]\)）。J-lens 给出机制解释：</p>
+<ul>
+<li><strong>最后一层 ≈“马上要说的词”</strong>（就是 logit lens 那段信号），预测第 1 个 draft token 够用；但它已“塌缩”成具体 token，<strong>丢了对后续位置的规划信息</strong>。</li>
+<li>draft 要连续猜<strong>多个未来</strong> token，靠的是<strong>中段层的抽象/语义/计划</strong>信号——正是工作空间里已点亮的“spider / 押韵词 / France”这类“还没说、但在想”的内容。</li>
+<li>所以多层拼接 = 同时拿到“末层的马上要说” + “中层的未来要说/在想什么”；\(W_{\text{fc}}\) 就是在学一个“融合各层可读信号”的映射。<strong>而 J-lens 恰恰是对未来位置 \(t'\ge t\) 平均</strong>——它读的就是“未来会说的词”，与 draft 要预测的东西是同一件事的两面。</li>
+</ul>
+<p class="note"><strong>纠偏</strong>：这不是严格等价证明。EAGLE 的 \(W_{\text{fc}}\) 是<strong>端到端为接受率有监督训练</strong>的；\(J_\ell\) 是<strong>模型自身的无监督平均雅可比（因果）</strong>。两者精神相通（都从隐藏态抽“未来 token”信号），构造不同。准确说法是：<strong>J-lens 为“多层拼接优于单层”提供了机制解释与经验证据</strong>（层间信号互补、单层不在输出坐标系），而非“证明了” EAGLE。</p>
+
+<h3>6.3 发散：这套东西还能做什么</h3>
+<p class="note">以下是<strong>我的工程推断，非论文结论</strong>，标注清楚以免混淆。</p>
+
+<p><strong>(1) 快速评估“长程推理能力”。</strong> 消融实验本身就是一把尺：J-space 是多步推理的载体，抹掉它 multihop→0 而流利不变。可设计探针：给定推理任务，测 (a) 模型是否在 J-space 里<strong>按顺序</strong>点亮中间步骤；(b) 点亮概念数 / 持续层数；(c) 对 J-space 消融的敏感度。一个能答对 multihop 却<strong>几乎不动用 J-space</strong> 的模型，很可能在<strong>背题/走捷径</strong>而非真推理。比“看最终答对率”更能区分真推理 vs 记忆，也能横比不同模型/训练阶段。局限（诚实）：J-lens 只抓单 token 概念，多 token/隐式推理会漏。</p>
+
+<p><strong>(2) 评判“精度”——两种理解。</strong></p>
+<ul>
+<li><strong>量化 / 低精度诊断（和你做推理系统最相关）</strong>：J-space 幅度小（&lt;10% 方差）却<strong>因果关键</strong>。按幅度做的量化/剪枝可能<strong>不成比例地损坏</strong>这个“低幅高杠杆”子空间——于是出现“困惑度没怎么变、流利照旧，但多步推理垮了”的量化模型。J-lens 可作诊断：量化前后对比 J-space readout，若工作空间内容退化，就预示推理会退化，即使 perplexity 看着正常。这也解释了<strong>为什么 perplexity 是差的量化指标</strong>——它被高幅的自动处理主导，测不到工作空间。</li>
+<li><strong>输出忠实度判定</strong>：把 J-space 中间内容与最终答案对比，二者<strong>背离</strong>即“心口不一”信号——可用于幻觉 / 不忠实 CoT / 评测意识 / 伪造数据的检测（正是论文的对齐审计应用）。</li>
+</ul>
+
+<p><strong>(3) 给投机解码的启发。</strong></p>
+<ul>
+<li><strong>层选择</strong>：EAGLE3 的 \([1,9,17,25,33]\) 是均匀启发式。J-lens 指出“工作空间 onset”之后的中段层才信息量大（前 1/3 是噪声）。可用 J-lens readout 的信息量来<strong>挑该抽哪些层</strong>，替代均匀取层。</li>
+<li><strong>近免费的线性 draft 头</strong>：\(J_\ell\) 是“层 \(\ell\to\)最终层”的平均线性代理，\(\text{unembed}(J_\ell h_\ell)\) 一次矩阵乘就能读出<strong>未来</strong> token 倾向——一个<strong>免训练</strong>的 self-speculative / early-exit drafter 雏形。局限：\(J_\ell\) 是上下文平均的、偏粗，单用接受率低；但作为廉价 proposal（反正要被大模型验证）形状正合适，或用作 EAGLE 头的初始化。</li>
+<li><strong>在 J-space 坐标里 draft</strong>：J-space 只有几十个活跃概念且已含“未来词”，可从 top-k J-lens readout 里 proposal，而非全词表——一个语义压缩的 draft 空间。</li>
+<li><strong>诚实边界</strong>：\(J_\ell\) 不是为接受率优化的，EAGLE 的学习头会在接受率上胜出。J-lens 的价值在<strong>解释、层选择、初始化、廉价 proposal</strong>，不是即插即用替代。</li>
+</ul>
+
+<!-- ═══════════ 小结 ═══════════ -->
+<h2>7. 小结</h2>
+
+<p>J-lens 用一个「平均雅可比 \(J_\ell\)」把中间层激活校正到最终层坐标系，再用模型自己的反嵌入读成一串词——读的是「未来可能说的」，不是「马上要说的」。这些词所在的稀疏子空间就是 J-space，它容量小（≤~25）、占激活 &lt;10%，却接线成一个广播枢纽。logit lens 只是 \(J_\ell=I\) 的粗糙特例。</p>
+
+<p><strong>本课后半段的三个落点</strong>：（拟合）\(J_\ell\) 是<strong>闭式估计</strong>——模型自身 backward 在语料上取 running mean，不是 SGD 训练（logit lens = \(\texttt{use\_jacobian=False}\)）；（消融）逐位置把 top-\(k\) 活跃 J-lens 方向<strong>投影清零</strong>且避开 top-10 输出 token，multihop→0 而流利不变；（第一性原理）\(J_\ell\) 是<strong>每层一个</strong>的“隐藏态→未来 token”线性图，层间信号互补——这解释了 EAGLE3 多层拼接为何有效，也启发了投机解码层选择 / 免训练线性 draft 头、以及用 J-space 退化诊断量化精度与长程推理。</p>
+
+<table>
+<caption style="font-size:0.8rem;color:#6b7280;text-align:left;margin-bottom:0.3rem;">表 A：三种「透镜」对比</caption>
+<tr><th></th><th>logit lens</th><th>tuned lens</th><th>J-lens</th></tr>
+<tr><td>核心操作</td><td>\(W_U\,\text{norm}(h_\ell)\)</td><td>训练的每层线性映射</td><td>\(W_U\,\text{norm}(J_\ell h_\ell)\)</td></tr>
+<tr><td>拟合目标</td><td>无（直接套）</td><td>匹配输出分布（相关）</td><td>平均一阶因果效应</td></tr>
+<tr><td>中间层可用性</td><td>差（乱码）</td><td>中（易「跳到答案」）</td><td>好（可读中间计算）</td></tr>
+<tr><td>与 J-lens 关系</td><td>\(J_\ell=I\) 特例</td><td>相关式近亲</td><td>—</td></tr>
+</table>
+
+<table>
+<caption style="font-size:0.8rem;color:#6b7280;text-align:left;margin-bottom:0.3rem;">表 B：scratchpad / 思维链 vs J-space</caption>
+<tr><th></th><th>scratchpad / CoT</th><th>J-space</th></tr>
+<tr><td>载体</td><td>写出来的文字</td><td>内部神经激活</td></tr>
+<tr><td>是否需说出</td><td>是</td><td>否（沉默）</td></tr>
+<tr><td>怎么读</td><td>直接看文本</td><td>用 J-lens 读</td></tr>
+<tr><td>能否藏私</td><td>难（可见）</td><td>本来能，被 J-lens 揭开</td></tr>
+</table>
+
+<table>
+<caption style="font-size:0.8rem;color:#6b7280;text-align:left;margin-bottom:0.3rem;">表 C：人脑全局工作空间 vs Claude 的 J-space</caption>
+<tr><th></th><th>人脑 GWT</th><th>Claude J-space</th></tr>
+<tr><td>功能属性</td><td>报告 / 推理 / 广播 / 灵活</td><td>基本一致（五大属性）</td></tr>
+<tr><td>维持机制</td><td>递归回路（时间演化）</td><td>单次前传（深度当时间）</td></tr>
+<tr><td>工作记忆</td><td>数秒即衰减</td><td>可回取任意早期缓存</td></tr>
+<tr><td>内容形式</td><td>图像/声音/动作/词</td><td>几乎全是词</td></tr>
+</table>
+
+<div class="key-insight">一句话记住：<strong>J-lens 是「把后续所有层换成一个平均线性映射 \(J_\ell\)，再用模型自己的反嵌入去读」——于是中间层激活也能被翻译成一串「心里的词」。</strong></div>
+
+<!-- ═══════════ Quiz ═══════════ -->
+<h2>8. Quiz</h2>
+
+<div class="quiz" data-answer="3">
+<h4>Q1. logit lens 与 J-lens 的关系是？</h4>
+<label><input type="radio" name="q1" value="1"> logit lens 是 J-lens 取 \(J_\ell=W_U\) 的特例</label>
+<label><input type="radio" name="q1" value="2"> J-lens 是 logit lens 取 \(J_\ell=0\) 的特例</label>
+<label><input type="radio" name="q1" value="3"> logit lens 是 J-lens 取 \(J_\ell=I\) 的特例</label>
+<label><input type="radio" name="q1" value="4"> 两者在所有层上都完全等价可互换用</label>
+<div class="feedback correct">✓ 正确。令 \(J_\ell=I\)，读出公式退化为 \(\text{softmax}(W_U\,\text{norm}(h_\ell))\)，正是 logit lens；\(J_\ell\) 就是它省略掉的跨层坐标校正。</div>
+<div class="feedback incorrect">✗ 再想想读出公式 \(\text{softmax}(W_U\,\text{norm}(J_\ell h_\ell))\)：把 \(J_\ell\) 换成什么，就变回 logit lens？是恒等矩阵 \(I\)。</div>
+</div>
+
+<div class="quiz" data-answer="1">
+<h4>Q2. 为什么 J-lens 要对雅可比「跨语料平均」？</h4>
+<label><input type="radio" name="q2" value="1"> 为了分离一般言语化倾向与当下特定用途</label>
+<label><input type="radio" name="q2" value="2"> 为了让矩阵变成对称正定便于求逆运算</label>
+<label><input type="radio" name="q2" value="3"> 为了把多个不同 token 方向压进单一维度</label>
+<label><input type="radio" name="q2" value="4"> 为了让读出结果始终精确等于模型输出</label>
+<div class="feedback correct">✓ 正确。单条 prompt 的雅可比混了「一般倾向」与「此刻上下文的特定用途」；跨约 1000 条语料平均，把特定用途洗掉，留下 verbalizable 的稳定倾向。</div>
+<div class="feedback incorrect">✗ 关键在「verbalizable（本就倾向能说）」vs「verbalized-once（这次碰巧说了）」。平均是为了剥离后者，保留前者。</div>
+</div>
+
+<div class="quiz" data-answer="4">
+<h4>Q3. swap（交换 J-space 两个坐标）实验主要想排除什么？</h4>
+<label><input type="radio" name="q3" value="1"> 排除注意力机制对最终结果造成的干扰</label>
+<label><input type="radio" name="q3" value="2"> 排除反嵌入矩阵没有做归一化的影响</label>
+<label><input type="radio" name="q3" value="3"> 排除训练语料规模不足导致的估计偏差</label>
+<label><input type="radio" name="q3" value="4"> 排除 J-space 只是被动记分牌的可能性</label>
+<div class="feedback correct">✓ 正确。若 J-space 只是被动记录别处决定的「记分牌」，编辑它应当无效。可一旦 swap 让下游答案随之改变（8→6），就证明它是<strong>因果读出</strong>。</div>
+<div class="feedback incorrect">✗ 相关不等于因果。swap 的目的正是推翻「J-space 只是被动记分牌（scoreboard）」这个零假设。</div>
+</div>
+
+<div class="quiz" data-answer="2">
+<h4>Q4. 删除（ablate）J-space 后，最可能观察到什么？</h4>
+<label><input type="radio" name="q4" value="1"> 流利续写彻底崩溃但多步推理完全正常</label>
+<label><input type="radio" name="q4" value="2"> 多步推理接近 0 但流利续写仍然正常</label>
+<label><input type="radio" name="q4" value="3"> 所有能力包括基础语法都同时彻底失效</label>
+<label><input type="radio" name="q4" value="4"> 仅事实召回下降而推理能力反倒增强了</label>
+<div class="feedback correct">✓ 正确。工作空间只管「高阶、灵活」的认知：ablate 后多步推理掉到≈0、摘要/写诗大跌，但流利说话、语法、情感分类、事实召回基本照常。</div>
+<div class="feedback incorrect">✗ 反了。绕过工作空间的是「自动处理」（流利、语法、召回）；依赖工作空间的是「多步推理」等高阶认知。</div>
+</div>
+
+<div class="quiz" data-answer="4">
+<h4>Q5. \(J_\ell\) 矩阵是怎么得到的？</h4>
+<label><input type="radio" name="q5" value="1"> 用梯度下降训练一个线性层去匹配输出分布</label>
+<label><input type="radio" name="q5" value="2"> 对反嵌入矩阵做奇异值分解后截断低秩得到</label>
+<label><input type="radio" name="q5" value="3"> 把每层隐藏态聚类后取质心作为映射矩阵</label>
+<label><input type="radio" name="q5" value="4"> 模型自身反向传播的雅可比在语料上取平均</label>
+<div class="feedback correct">✓ 正确。它是闭式估计不是训练：一次前向 + 若干次 VJP 反向拿到 \(\partial h_{\text{final}}/\partial h_\ell\)，跨位置和约 1000 条语料取 running mean。无参数、无损失、无优化器。</div>
+<div class="feedback incorrect">✗ 用梯度下降“训练线性层匹配输出”的是 tuned lens（相关式）。J-lens 是模型自己 backward 出的雅可比取平均（因果式）。</div>
+</div>
+
+<div class="quiz" data-answer="1">
+<h4>Q6. 消融时为什么“不抹掉出现在干净前向 top-10 的 token”？</h4>
+<label><input type="radio" name="q6" value="1"> 为了只针对内部推理而非本就要说的词</label>
+<label><input type="radio" name="q6" value="2"> 为了让消融强度在各层之间保持一致性</label>
+<label><input type="radio" name="q6" value="3"> 为了避免破坏反嵌入矩阵的归一化结构</label>
+<label><input type="radio" name="q6" value="4"> 为了让困惑度在消融前后完全不发生变化</label>
+<div class="feedback correct">✓ 正确。若把“模型本来就要说出口的词”也抹掉，就分不清损伤来自“思考”还是“报告”。排除掉 top-10 输出后，消融只打击内部推理（沉默的思考）。</div>
+<div class="feedback incorrect">✗ 关键是分离“内部推理”与“马上要说的报告”。不抹 top-10 输出 token，才能确保损伤特指内部思考，而非模型要输出的内容。</div>
+</div>
+
+</body>
+</html>

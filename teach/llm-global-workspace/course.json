@@ -1,0 +1,15 @@
+{
+  "title": "语言模型中的全局工作空间（J-space / Jacobian Lens）",
+  "lessons": [
+    {
+      "title": "全局工作空间与 Jacobian Lens（J-lens）",
+      "path": "lessons/0001-global-workspace-and-jlens.html"
+    }
+  ],
+  "references": [
+    {
+      "title": "术语表：全局工作空间与 J-space",
+      "path": "reference/glossary.html"
+    }
+  ]
+}

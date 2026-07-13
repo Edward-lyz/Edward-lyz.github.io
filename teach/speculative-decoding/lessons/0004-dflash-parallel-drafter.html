@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 04: DFlash — Parallel Drafter 的原理与局限</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+  onload="renderMathInElement(document.body, {delimiters:[{left:'\\[',right:'\\]',display:true},{left:'\\(',right:'\\)',display:false}]})"></script>
+<script defer src="../assets/quiz.js"></script>
+</head>
+<body>
+
+<h1>DFlash：Parallel Drafter 的原理与局限</h1>
+
+<p class="lesson-meta">
+<strong>前置阅读</strong>：<a href="../reference/glossary.html">术语表</a>（建议先通读一遍再回来）
+</p>
+
+<!-- ═══════════ 一图流 ═══════════ -->
+<h2>一图流：DFlash 前向传播</h2>
+
+<iframe src="../assets/dflash-animation.html" title="DFlash 前向传播动画" style="width:100%; aspect-ratio:5/4; border:1px solid #333; border-radius:8px;" loading="lazy"></iframe>
+
+<!-- ═══════════ 背景 ═══════════ -->
+<h2>1. 背景：为什么需要 Parallel Drafter</h2>
+
+<h3>1.1 Speculative Decoding 的延迟公式</h3>
+
+<p>先建立最核心的性能模型。一轮 speculative decoding 的 per-token 延迟：</p>
+
+<div class="math-block">
+<span class="label">定义：per-token latency</span>
+\[L = \frac{T_{\text{draft}} + T_{\text{verify}}}{\tau}\]
+</div>
+
+<p>含义拆解：</p>
+<ul>
+<li>\(T_{\text{draft}}\)：draft model 生成 γ 个候选 token 的总延迟</li>
+<li>\(T_{\text{verify}}\)：target model 验证这些候选的延迟（一次前传）</li>
+<li>\(\tau\)：一轮中平均能被接受的 token 数量（含 bonus token）</li>
+<li>分子是「一轮的总耗时」，分母是「一轮产出的 token 数」→ 比值就是每个 token 的平均代价</li>
+</ul>
+
+<h3>1.2 AR Drafter 的瓶颈：串行累积</h3>
+
+<p>Autoregressive drafter（如 EAGLE3）逐 token 生成 → 每步依赖前一步结果：</p>
+
+<div class="math-block">
+<span class="label">AR drafter 的 drafting latency</span>
+\[T_{\text{draft}}^{\text{AR}} = \gamma \times T_{\text{step}}\]
+</div>
+
+<p>推导过程：</p>
+<div class="derivation">
+<div class="step">
+<span class="step-label">Step 1: 单步延迟</span>
+每生成一个 draft token 需要一次网络前传，延迟 = \(T_{\text{step}}\)
+</div>
+<div class="step">
+<span class="step-label">Step 2: 串行依赖</span>
+第 k 步的输入 = 第 k-1 步的输出（上一个采样的 token 的 hidden state）→ 必须严格串行
+</div>
+<div class="step">
+<span class="step-label">Step 3: 累积</span>
+γ 个 token 串行 → 总延迟 = γ × 单步延迟
+</div>
+</div>
+
+<p><strong>后果</strong>：为了控制 \(T_{\text{draft}}\)，EAGLE3 被迫用 1 层浅网络（最小化 \(T_{\text{step}}\)）+ 短 block（γ ≤ 7）。浅网络的表达力受限，尤其在第 1 个位置的预测精度不如深网络。</p>
+
+<h3>1.3 Parallel Drafter 的动机</h3>
+
+<p>如果所有 γ 个位置能在一次前传中并行算出：</p>
+
+<div class="math-block">
+<span class="label">Parallel drafter 的 drafting latency</span>
+\[T_{\text{draft}}^{\text{parallel}} = T_{\text{fwd}}(\gamma) \approx T_{\text{fwd}}(1) \quad \text{（GPU 并行度足够时）}\]
+</div>
+
+<p>γ 个 token 作为一个 batch 同时通过网络 → 延迟与 γ 几乎无关（直到超出 GPU 计算/带宽瓶颈）。</p>
+
+<p><strong>收益</strong>：\(T_{\text{draft}}\) 不再是 γ 的线性函数 → 可以放心用更深的网络（5 层 vs 1 层）和更长的 block（γ = 7~16）。</p>
+
+<!-- ═══════════ 创新点 ═══════════ -->
+<h2>2. DFlash 的设计：KV Injection + 并行独立预测</h2>
+
+<h3>2.1 信息流全景</h3>
+
+<table>
+<tr><th>#</th><th>步骤</th><th>输入</th><th>输出</th></tr>
+<tr><td>①</td><td>Target 前传（已完成）</td><td>已接受的 token 序列</td><td>各层 hidden states \(H^{(l)}\)</td></tr>
+<tr><td>②</td><td>Context feature extraction</td><td>Target 的 m 个指定层 hidden states</td><td>Context feature \(H_{\text{ctx}}\)</td></tr>
+<tr><td>③</td><td>Draft 输入构造</td><td>γ 个 MASK token</td><td>Noise embedding（第一个位置用 anchor token 的 embedding）</td></tr>
+<tr><td>④</td><td>Draft backbone 前传</td><td>\(H_{\text{ctx}}\) 作为 KV + noise embedding 作为 Q</td><td>各位置 hidden states \(h_1, \ldots, h_\gamma\)</td></tr>
+<tr><td>⑤</td><td>LM head（frozen）</td><td>\(h_k\)</td><td>各位置 logits → softmax → 采样</td></tr>
+</table>
+
+<h3>2.2 Context Feature Extraction</h3>
+
+<p>从 target model 的多个指定层取 hidden states，拼接后做线性投影 + 归一化：</p>
+
+<div class="math-block">
+<span class="label">Context feature extraction</span>
+\[H_{\text{ctx}} = \text{RMSNorm}\bigl(W_c \cdot [H^{(l_1)};\; H^{(l_2)};\; \ldots;\; H^{(l_m)}]\bigr)\]
+</div>
+
+<p>逐步展开：</p>
+<div class="derivation">
+<div class="step">
+<span class="step-label">Step 1: 取 hidden states</span>
+Target model 有 N 层，我们从中挑选 m 个层（如第 8、16、24 层）的输出。每层输出形状 = \([S, d_t]\)，其中 S 为序列长度，\(d_t\) 为 target hidden dim。
+</div>
+<div class="step">
+<span class="step-label">Step 2: 拼接</span>
+沿 hidden dim 轴拼接 m 个 \([S, d_t]\) → 得到 \([S, m \cdot d_t]\)。
+</div>
+<div class="step">
+<span class="step-label">Step 3: 线性投影</span>
+乘以 \(W_c \in \mathbb{R}^{d \times (m \cdot d_t)}\) 将维度压缩回 draft model 的 hidden dim \(d\)。结果 shape = \([S, d]\)。
+</div>
+<div class="step">
+<span class="step-label">Step 4: RMSNorm</span>
+归一化到标准尺度，稳定后续 attention 的数值。
+</div>
+</div>
+
+<p><strong>为什么取多层？</strong> 浅层 hidden states 编码语法/表面模式，深层编码语义/推理信息。拼接多层 ≈ 让 draft model 同时获得多粒度的 context。</p>
+
+<h3>2.3 KV Injection</h3>
+
+<p>Draft model 每一层 attention 的 K/V 由 context 和 draft 自身的 hidden states 拼接而成：</p>
+
+<div class="math-block">
+<span class="label">KV injection（每层 i）</span>
+\[K_i = [W_i^K H_{\text{ctx}};\; W_i^K H_d], \quad V_i = [W_i^V H_{\text{ctx}};\; W_i^V H_d]\]
+</div>
+
+<div class="derivation">
+<div class="step">
+<span class="step-label">Step 1: Context KV</span>
+\(W_i^K H_{\text{ctx}}\) 将 context feature 映射为 key，shape = \([S, d_k]\)。同理生成 context value。这些 KV 让 draft token 能 "看到" 整个已确认的序列。
+</div>
+<div class="step">
+<span class="step-label">Step 2: Draft self KV</span>
+\(W_i^K H_d\) 将 block 内 draft hidden states 映射为 key，shape = \([\gamma, d_k]\)。让 block 内各位置互相可见。
+</div>
+<div class="step">
+<span class="step-label">Step 3: 拼接</span>
+K 和 V 各自沿序列维拼接 → attention 的 KV 总长度 = \(S + \gamma\)。
+</div>
+<div class="step">
+<span class="step-label">Step 4: Attention mask</span>
+Context 部分：每个 draft token 只看 anchor 之前的 context（因果性）。Draft 部分：block 内 bidirectional（所有 γ 个位置互相可见）。
+</div>
+</div>
+
+<p><strong>Block 内 bidirectional 的含义</strong>：attention 阶段各位置可以交换信息（hidden state 会相互 "参考"），但这不等于采样时有依赖——最终每个位置 <em>独立</em> 做 softmax + 采样。</p>
+
+<h3>2.4 Per-Position 独立预测</h3>
+
+<div class="math-block">
+<span class="label">DFlash 的 per-position 预测（核心特征）</span>
+\[p_k^{\text{DFlash}}(v) = \text{softmax}\bigl(\text{LM\_Head}(h_k)\bigr)[v]\]
+</div>
+
+<p>关键性质：\(p_k\) 是关于 token v 的分布，它<strong>不依赖</strong> \(x_1, \ldots, x_{k-1}\) 的实际采样结果。换句话说：</p>
+<ul>
+<li>\(h_k\) 是 backbone 前传的输出——此时还没有任何 token 被采样（输入全是 MASK）</li>
+<li>所以 \(p_k\) 本质上是一个<strong>边际分布</strong>（marginal），不是条件分布（conditional）</li>
+<li>这正是 DFlash 能做 O(1) 并行的前提：各位置采样互不等待</li>
+<li>也是其根本局限——下面推导</li>
+</ul>
+
+<!-- ═══════════ 公式推导 ═══════════ -->
+<h2>3. 公式推导：为什么独立预测必然导致 Suffix Decay</h2>
+
+<h3>3.1 问题设定</h3>
+
+<p>假设 context 允许两种等概率续写：</p>
+<ul>
+<li>路径 A："of course"（概率 0.5）</li>
+<li>路径 B："no problem"（概率 0.5）</li>
+</ul>
+
+<p>Target model 的真实条件分布：</p>
+<div class="math-block">
+\[p^t(x_1 = \text{"of"}) = 0.5, \quad p^t(x_1 = \text{"no"}) = 0.5\]
+\[p^t(x_2 = \text{"course"} \mid x_1 = \text{"of"}) = 1.0\]
+\[p^t(x_2 = \text{"problem"} \mid x_1 = \text{"no"}) = 1.0\]
+</div>
+
+<h3>3.2 DFlash 的边际分布推导</h3>
+
+<p><strong>Position 1</strong>：由于不依赖任何前驱，DFlash 可以准确估计：</p>
+<div class="math-block">
+\[p_1^d(\text{"of"}) \approx 0.5, \quad p_1^d(\text{"no"}) \approx 0.5\]
+</div>
+
+<p><strong>Position 2</strong>：DFlash 无法看到 position 1 的采样结果，它的预测是对所有 \(x_1\) 可能取值的<strong>边际化</strong>：</p>
+
+<div class="derivation">
+<div class="step">
+<span class="step-label">Step 1: 写出全概率公式</span>
+\[p_2^d(v) = \sum_{x_1 \in \mathcal{V}} p^t(x_1) \cdot p^t(v \mid x_1)\]
+<br>因为 DFlash 的 hidden state 编码了所有可能前驱的信息（通过 bidirectional attention 看到的是 MASK，不是具体 token），所以它能给出的最佳估计就是这个边际分布。
+</div>
+<div class="step">
+<span class="step-label">Step 2: 代入具体值</span>
+\[p_2^d(\text{"course"}) = p^t(\text{"of"}) \cdot p^t(\text{"course"} \mid \text{"of"}) + p^t(\text{"no"}) \cdot p^t(\text{"course"} \mid \text{"no"})\]
+\[= 0.5 \times 1.0 + 0.5 \times 0.0 = 0.5\]
+同理：
+\[p_2^d(\text{"problem"}) = 0.5 \times 0.0 + 0.5 \times 1.0 = 0.5\]
+</div>
+<div class="step">
+<span class="step-label">Step 3: 实际采样</span>
+Position 1 和 position 2 独立采样。四种组合及其概率：
+<table>
+<tr><th>\(x_1\)</th><th>\(x_2\)</th><th>采样概率</th><th>一致？</th></tr>
+<tr><td>"of"</td><td>"course"</td><td>0.5 × 0.5 = 0.25</td><td>✓</td></tr>
+<tr><td>"of"</td><td>"problem"</td><td>0.5 × 0.5 = 0.25</td><td>✗ collision</td></tr>
+<tr><td>"no"</td><td>"course"</td><td>0.5 × 0.5 = 0.25</td><td>✗ collision</td></tr>
+<tr><td>"no"</td><td>"problem"</td><td>0.5 × 0.5 = 0.25</td><td>✓</td></tr>
+</table>
+</div>
+<div class="step">
+<span class="step-label">Step 4: Acceptance analysis</span>
+Position 1 能被接受：100%（边际 = 真实分布，无偏）。<br>
+Position 2 条件 acceptance（given position 1 accepted）：<br>
+如果 \(x_1 =\) "of" 被接受 → target 要求 \(x_2 =\) "course"，但 DFlash 只有 50% 概率采到 "course" → acceptance = 50%。<br>
+对称地 \(x_1 =\) "no" 同理 → <strong>position 2 的条件 acceptance rate ≈ 50%</strong>。
+</div>
+</div>
+
+<h3>3.3 一般情形：Suffix Decay 的数学必然性</h3>
+
+<p>泛化到任意分布。Position k 的 acceptance probability 由 TV distance 给出：</p>
+
+<div class="math-block">
+<span class="label">Per-position acceptance (Leviathan et al., 2023)</span>
+\[c_k = 1 - \text{TV}(p_k^d,\; p_k^t) = 1 - \frac{1}{2}\|p_k^d - p_k^t\|_1\]
+</div>
+
+<div class="derivation">
+<div class="step">
+<span class="step-label">Step 1: TV distance 定义</span>
+\[\text{TV}(p, q) = \frac{1}{2} \sum_{v \in \mathcal{V}} |p(v) - q(v)| = \frac{1}{2}\|p - q\|_1\]
+它衡量两个分布之间的最大概率差异。取值范围 \([0, 1]\)。
+</div>
+<div class="step">
+<span class="step-label">Step 2: 为什么 acceptance = 1 − TV？</span>
+标准 rejection sampling 中，token \(x\) 被接受的概率 = \(\min(1, p^t(x)/p^d(x))\)。对这个接受概率关于 \(p^d\) 求期望：
+\[\mathbb{E}_{x \sim p^d}\bigl[\min(1, p^t(x)/p^d(x))\bigr] = \sum_v \min(p^d(v), p^t(v)) = 1 - \text{TV}(p^d, p^t)\]
+最后一步用了 identity：\(\sum_v \min(p(v), q(v)) = 1 - \text{TV}(p, q)\)。
+</div>
+<div class="step">
+<span class="step-label">Step 3: DFlash 的 TV 单调增大</span>
+对 DFlash 而言：<br>
+- Position 1：\(p_1^d\) 是无条件分布 ≈ target 边际 → TV ≈ 0 → \(c_1\) 高<br>
+- Position k（k > 1）：\(p_k^d\) 是边际分布，\(p_k^t\) 是条件分布 \(p(x_k \mid x_{&lt;k})\)。随着 k 增大，条件分布越 "尖锐"（因为依赖更多前驱信息），而边际分布保持 "平坦" → 两者差距增大 → TV 增大 → \(c_k\) 下降。
+</div>
+<div class="step">
+<span class="step-label">Step 4: Prefix survival 的链式衰减</span>
+一轮的 expected acceptance length：
+\[\tau = 1 + \sum_{k=1}^{\gamma} \prod_{i=1}^k c_i = 1 + \sum_{k=1}^{\gamma} a_k\]
+由于 \(c_k &lt; 1\) 且随 k 递减 → \(a_k = \prod_{i=1}^k c_i\) 指数衰减 → 后续 token 贡献的期望 accept 越来越少 → 验证它们是在浪费 target 计算。
+</div>
+</div>
+
+<h3>3.4 数值例证（论文 Figure 2 数据）</h3>
+
+<table>
+<tr><th>Position</th><th>DFlash \(c_k\)（Chat domain）</th><th>EAGLE3 \(c_k\)（Chat domain）</th></tr>
+<tr><td>1</td><td>0.88</td><td>0.81</td></tr>
+<tr><td>2</td><td>0.79</td><td>0.82</td></tr>
+<tr><td>3</td><td>0.73</td><td>0.83</td></tr>
+<tr><td>4</td><td>0.68</td><td>0.82</td></tr>
+<tr><td>5</td><td>0.65</td><td>0.81</td></tr>
+<tr><td>6</td><td>0.63</td><td>0.80</td></tr>
+</table>
+
+<p>DFlash 在 position 1 胜出（深网络 + rich context），但后续因 suffix decay 快速衰减。EAGLE3 因为有 token 间条件依赖而几乎保持恒定。</p>
+
+<!-- ═══════════ 小结 ═══════════ -->
+<h2>4. 小结</h2>
+
+<div class="key-insight">
+<strong>DFlash 的贡献</strong>：<br>
+✓ O(1) drafting latency → 可用 5 层深网络 → position 1 精度显著高于 AR drafter<br>
+✓ KV injection 从 target 多层获取 rich context<br>
+✓ Bidirectional attention 让 block 内 hidden states 互相参考<br><br>
+<strong>DFlash 的根本局限</strong>：<br>
+✗ 独立采样 → 给出边际分布而非条件分布 → multi-modal collision → suffix decay<br>
+✗ Suffix decay 是数学必然（TV distance 单调增大），不是工程可修补的 bug<br><br>
+<strong>DSpark 的设计目标</strong>：保留 DFlash 的 O(1) backbone + 深网络优势，加一个<strong>极轻量的 sequential head</strong> 在采样阶段注入 token 间依赖，修复边际→条件的偏差。
+</div>
+
+<!-- ═══════════ Quiz ═══════════ -->
+<h2>5. Quiz</h2>
+
+<div class="quiz" data-answer="2">
+  <h4>Q1: DFlash 的 block 内 attention 是什么类型？</h4>
+  <label><input type="radio" name="q1" value="1"> Causal — 各位置只能看到前面位置的 hidden state</label>
+  <label><input type="radio" name="q1" value="2"> Bidirectional — block 内所有位置的 hidden state 互相可见</label>
+  <label><input type="radio" name="q1" value="3"> 完全独立 — 各位置看不到彼此的 hidden state 表示</label>
+  <div class="feedback correct">✓ 正确！Block 内 bidirectional。但 hidden state 信息共享 ≠ 采样依赖。Attention 让各位置的表示更好，但 softmax + 采样仍然各自独立做。</div>
+  <div class="feedback incorrect">✗ Block 内是 bidirectional attention——所有 γ 个位置互相可见。但要区分 "attention 阶段的信息共享" 和 "采样阶段的条件依赖" 是两回事。</div>
+</div>
+
+<div class="quiz" data-answer="3">
+  <h4>Q2: DFlash 能用 5 层而 EAGLE3 只能用 1 层的根本原因？</h4>
+  <label><input type="radio" name="q2" value="1"> DFlash 每层参数量更少，总计算量可控</label>
+  <label><input type="radio" name="q2" value="2"> DFlash 使用了 flash attention 算子降低每层延迟</label>
+  <label><input type="radio" name="q2" value="3"> 并行前传使层数只影响单次延迟，不乘以串行步数 γ</label>
+  <div class="feedback correct">✓ 正确！AR drafter 的总延迟 = 层数 × γ × 每层延迟（串行步数乘以单步深度）。Parallel drafter 只做一次前传：总延迟 = 层数 × 每层延迟（不乘 γ）。所以加深网络的代价完全不同。</div>
+  <div class="feedback incorrect">✗ 关键不是单层开销的大小，而是 parallel vs autoregressive 对总延迟的不同乘法结构。回顾 Section 1.2 的推导。</div>
+</div>
+
+<div class="quiz" data-answer="1">
+  <h4>Q3: Suffix decay 的数学本质是什么？</h4>
+  <label><input type="radio" name="q3" value="1"> 独立预测输出边际分布，与真实条件分布的 TV distance 随位置增大</label>
+  <label><input type="radio" name="q3" value="2"> 深层 hidden state 信息退化导致远距离位置预测精度下降</label>
+  <label><input type="radio" name="q3" value="3"> RoPE 位置编码在远距离上的数值精度损失影响 attention 质量</label>
+  <div class="feedback correct">✓ 正确！边际分布 p(x_k) 对所有可能的前驱求了平均，而条件分布 p(x_k|x_{&lt;k}) 利用了前驱的具体取值。前驱越多 → 条件分布越尖锐 → 与平坦的边际分布偏差越大 → TV↑ → acceptance↓。</div>
+  <div class="feedback incorrect">✗ Suffix decay 不是 hidden state 退化或位置编码问题。即使网络无限深、位置编码完美，只要采样是独立的，边际-条件偏差就无法消除。它是独立性假设的理论必然代价。</div>
+</div>
+
+<div class="followup">
+<strong>有疑问？</strong> 随时向我提问——无论是公式细节、直觉理解还是代码对应位置。<br>
+<strong>下一课</strong>：<a href="0005-dspark-semi-autoregressive.html">DSpark Semi-Autoregressive Generation</a> — 如何用 base + bias 分解 + Markov head 修复 suffix decay。
+</div>
+
+</body>
+</html>

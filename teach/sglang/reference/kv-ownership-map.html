@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SGLang KV Ownership Map</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<h1>SGLang KV Ownership Map</h1>
+<p class="outcome">从逻辑 token、request row、physical slot、Radix node 到 HiCache/PD destination 的 ownership 速查表。</p>
+
+<h2>两级索引</h2>
+<pre><code>Req.origin_input_ids / output_ids
+       │ logical sequence position
+       ▼
+ReqToTokenPool[req_pool_idx, position]
+       │ physical slot id
+       ▼
+TokenToKVPoolAllocator → MHATokenToKVPool K/V per layer</code></pre>
+
+<h2>Ownership 转移</h2>
+<table>
+<thead><tr><th>阶段</th><th>Request row</th><th>Physical KV</th><th>Prefix lock</th></tr></thead>
+<tbody>
+<tr><td>Waiting before allocation</td><td>通常无</td><td>tree prefix only</td><td>match 后持有</td></tr>
+<tr><td>Extend</td><td>request 持有</td><td>prefix canonical + private new</td><td>持有</td></tr>
+<tr><td>Decode</td><td>request 持有</td><td>每轮追加 private slot/page</td><td>持有</td></tr>
+<tr><td>Chunk stash</td><td>request 可复用</td><td>已算部分转 canonical</td><td>更新 terminal</td></tr>
+<tr><td>Finish</td><td>释放</td><td>committed 对齐部分转 tree</td><td>释放</td></tr>
+<tr><td>Retract</td><td>释放</td><td>立即释放，不插 tree</td><td>释放</td></tr>
+<tr><td>HiCache L2/L3</td><td>L1 使用时仍需 row</td><td>host/storage metadata + load-back L1 slots</td><td>device/host 各有保护</td></tr>
+<tr><td>PD Decode</td><td>Decode 先分配</td><td>Decode 先拥有 destination slots</td><td>可有 decode-side prefix</td></tr>
+</tbody>
+</table>
+
+<h2>Accounting</h2>
+<pre><code>schedulable ≈ free + evictable - future reservations
+protected   = tree segments whose lock_ref &gt; 0
+committed   ≤ allocated
+page_size&gt;1 ⇒ match, allocation, insertion, eviction use page granularity</code></pre>
+
+<h2>Per-rank tensor 量级</h2>
+<pre><code>KV bytes = layers × local_tokens × bytes_per_element
+           × (local_k_heads × k_dim + local_v_heads × v_dim)</code></pre>
+<p>这是 K/V tensor 下界。实际 pool 还包含 padded page、预留、layout 与 feature-specific buffers。DPA 改变 local tokens，attention TP 改变 local heads。</p>
+
+<h2>Scheduler 与 backend 的契约</h2>
+<pre><code>Scheduler allocates out_cache_loc
+→ request page table records logical position → physical slot
+→ each attention layer writes new K/V into out_cache_loc
+→ backend reads history through page-table metadata</code></pre>
+
+<h2>绝不能混淆</h2>
+<ul>
+<li><code>req_pool_idx</code> 是 row id，不是 KV slot。</li>
+<li>token id 是模型词表 id，不是 physical slot。</li>
+<li>Radix node <code>value</code> 保存 slot ids，不保存另一份完整 K/V tensor。</li>
+<li>Evictable 是可回收承诺，不是 allocator 当前 free。</li>
+<li>DPA rank 决定 request/KV owner；EP rank 决定 expert weight owner。</li>
+<li>PD 两侧的 slot ids 属于不同 pool，必须通过 destination metadata 协商。</li>
+</ul>
+</body>
+</html>

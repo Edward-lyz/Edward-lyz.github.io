@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Reference: 推理显存公式速查表</title>
+<style>
+:root { --text: #1a1a1a; --bg: #fefefe; --accent: #2563eb; --border: #e5e7eb; --code-bg: #f3f4f6; }
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'JetBrains Mono', 'Fira Code', monospace; color: var(--text); background: var(--bg); max-width: 780px; margin: 0 auto; padding: 1.5rem; font-size: 14px; line-height: 1.6; }
+h1 { font-size: 1.3rem; margin-bottom: 1.5rem; font-family: sans-serif; }
+h2 { font-size: 1rem; margin-top: 1.5rem; margin-bottom: 0.5rem; font-family: sans-serif; border-bottom: 1px solid var(--border); padding-bottom: 0.2rem; }
+.block { background: var(--code-bg); padding: 0.8rem 1rem; margin: 0.5rem 0; border-radius: 4px; white-space: pre-wrap; }
+table { border-collapse: collapse; width: 100%; margin: 0.5rem 0; font-size: 0.85rem; }
+th, td { border: 1px solid var(--border); padding: 0.3rem 0.5rem; }
+th { background: var(--code-bg); }
+@media print { body { font-size: 11px; padding: 0.5rem; } }
+</style>
+</head>
+<body>
+
+<h1>推理显存公式速查表</h1>
+
+<h2>通用骨架</h2>
+<div class="block">max_bs = remaining / (kv_per_token × layers × (ctx_len + output_len))
+remaining = device_mem × 0.94 − hold_mem − weights − graph_mem</div>
+
+<h2>MoE 权重（DeepSeek 系列）</h2>
+<div class="block">expert_fp8 = inter_dim × hidden_dim × 3 / 1024³  (GB)
+non_moe = measured_total − expert_fp8 × moe_layers × experts_per_card_fp8
+expert_actual = expert_fp8 × moe_dtype_bytes
+weights = non_moe + experts_per_card × expert_actual × moe_layers
+experts_per_card = total_experts / (nodes × gpus_per_node)</div>
+
+<h2>模型参数速查</h2>
+<table>
+<tr><th></th><th>V3</th><th>V4</th></tr>
+<tr><td>total_experts</td><td>256</td><td>384</td></tr>
+<tr><td>inter_dim</td><td>2048</td><td>3072</td></tr>
+<tr><td>hidden_dim</td><td>7168</td><td>7168</td></tr>
+<tr><td>moe_layers</td><td>58</td><td>58</td></tr>
+<tr><td>total_layers</td><td>61</td><td>61</td></tr>
+<tr><td>non_moe baseline</td><td>99 GB</td><td>130 GB</td></tr>
+<tr><td>draft baseline</td><td>5.23 GB</td><td>6.5 GB</td></tr>
+<tr><td>default moe_dtype</td><td>fp8 (1.0)</td><td>fp4 (0.5)</td></tr>
+</table>
+
+<h2>KV Cache</h2>
+<table>
+<tr><th>模型</th><th>bytes/token/layer</th><th>说明</th></tr>
+<tr><td>V3 non-sparse</td><td>1152 (576×2)</td><td>MLA latent K+V</td></tr>
+<tr><td>V3 sparse</td><td>771.2</td><td>部分 head 不压缩</td></tr>
+<tr><td>V4 SWA</td><td>~584</td><td>NopeFp8RopeBf16Pack</td></tr>
+<tr><td>V4 C4/C128</td><td>~1024</td><td>压缩 KV</td></tr>
+<tr><td>Qwen3</td><td>kv_heads×head_dim×2×dtype</td><td>标准 GQA</td></tr>
+<tr><td>MiniMax2.5</td><td>8×128×2×dtype</td><td>仅 62 层 full_attn</td></tr>
+</table>
+
+<h2>CUDA Graph</h2>
+<div class="block">graph_step = 8
+graph_num = floor(max_bs_initial / 8)
+graph_mem = graph_num × 0.176 GB</div>
+
+<h2>MTP 额外开销</h2>
+<div class="block">draft_weights = draft_non_moe + experts_per_card × expert_actual × 1
+kv_layers += 1  (draft 层的 KV Cache)</div>
+
+<h2>BS 对齐</h2>
+<div class="block">DeepSeek: ceil(max_bs / 8) × 8
+Qwen3/MiniMax: floor(max_bs)</div>
+
+</body>
+</html>

@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Reference: MSA vs MLA vs DSA Comparison</title>
+<style>
+  body { font-family: 'Courier New', monospace; max-width: 900px; margin: 2em auto; padding: 0 1.5em; color: #222; line-height: 1.5; font-size: 0.9em; }
+  h1 { font-size: 1.4em; border-bottom: 2px solid #000; }
+  h2 { font-size: 1.1em; margin-top: 1.8em; background: #f0f0f0; padding: 0.3em 0.5em; }
+  table { border-collapse: collapse; width: 100%; margin: 0.5em 0; font-size: 0.88em; }
+  th, td { border: 1px solid #999; padding: 0.4em 0.6em; }
+  th { background: #ddd; }
+  .formula { background: #f8f8f0; padding: 0.5em; margin: 0.5em 0; border-left: 3px solid #666; font-size: 0.95em; }
+  code { background: #eee; padding: 0.1em 0.3em; }
+  .section-note { font-size: 0.85em; color: #555; margin-top: -0.5em; }
+</style>
+</head>
+<body>
+
+<h1>Sparse Attention Comparison: MSA vs MLA vs DSA</h1>
+
+<h2>Core Design Philosophy</h2>
+<table>
+<tr><th></th><th>MSA (MiniMax M3)</th><th>MLA (DeepSeek-V2/V3)</th><th>DSA (DeepSeek-V3.2)</th></tr>
+<tr><td>本质</td><td>Select which blocks to attend</td><td>Compress what to store</td><td>Select which tokens to attend (on MLA)</td></tr>
+<tr><td>Base attention</td><td>GQA (64Q/4KV)</td><td>MQA via latent decompress</td><td>MLA → MQA mode</td></tr>
+<tr><td>Indexer granularity</td><td>Block-level (128 tokens)</td><td>N/A</td><td>Token-level</td></tr>
+<tr><td>Selection unit</td><td>Per GQA-group</td><td>N/A</td><td>All heads share one index</td></tr>
+<tr><td>Indexer type</td><td>Softmax Q·K, max-pool</td><td>N/A</td><td>ReLU multi-head (lightning)</td></tr>
+<tr><td>Compute reduction</td><td>~28× @ 1M</td><td>0× (same full attention)</td><td>~20× @ 1M (estimate)</td></tr>
+<tr><td>KV cache saving</td><td>None (full GQA KV)</td><td>~4× compression</td><td>~4× (MLA) + sparse read</td></tr>
+</table>
+
+<h2>MSA (MiniMax Sparse Attention) — Key Formulas</h2>
+<div class="formula">
+<pre>
+Index:   Q_idx = sg(X)·W_q^idx ∈ ℝ^{N×H_kv×d_idx}
+         K_idx = sg(X)·W_k^idx ∈ ℝ^{N×1×d_idx}
+Score:   S^(r)_{i,j} = Q_idx^(r)_i · K_idx_j / √d_idx
+Block:   M^(r)_{i,b} = max_{j∈Block_b, j≤i} S^(r)_{i,j}
+Select:  I^(r)_i = TopK(M^(r)_i, k=16) ∪ {local_block}
+Attend:  O^(h)_i = softmax(Q^(h)_i · K^(r)[I]^T / √d_h) · V^(r)[I]
+
+FLOPs:   F_MSA = H_kv·d_idx·N² + 4·H_q·d_h·N·k·B_k
+</pre>
+</div>
+
+<h2>MLA (Multi-head Latent Attention) — Key Formulas</h2>
+<div class="formula">
+<pre>
+Compress:  c_kv = x · W_DKV  ∈ ℝ^{d_c=512}  (KV cache stores only this)
+Decompress: k = c_kv · W_UK,  v = c_kv · W_UV  (on-the-fly)
+RoPE:      k_rope = x · W_KR  (decoupled, stored separately, dim=64)
+Attend:    Full attention over all N tokens (no sparsity)
+
+KV cache/token/layer: d_c + d_rope = 512 + 64 = 576 elements
+  vs GQA: H_kv × d_h × 2 = 4 × 128 × 2 = 1024 elements
+</pre>
+</div>
+
+<h2>DSA (DeepSeek Sparse Attention) — Key Formulas</h2>
+<div class="formula">
+<pre>
+Indexer:   Multi-head ReLU attention (lightweight)
+           Score = ReLU(Q_idx · K_idx^T)  (no softmax!)
+Selection: Token-level, all query heads share same index set
+TopK:      Select top-k individual tokens (not blocks)
+Attend:    MLA-decoded K,V on selected tokens only
+
+Key diff vs MSA:
+  - Token-level (finer grain, harder to optimize on GPU)
+  - ReLU indexer (cheaper than softmax, no exp)
+  - Single shared index (not per-group)
+  - Built on MLA (compressed KV + sparse read)
+</pre>
+</div>
+
+<h2>MoE Routing Comparison</h2>
+<table>
+<tr><th></th><th>MiniMax M3</th><th>DeepSeek-V3</th></tr>
+<tr><td>Experts</td><td>128 routed + 1 shared</td><td>256 routed + 1 shared</td></tr>
+<tr><td>Top-k</td><td>4</td><td>8</td></tr>
+<tr><td>Scoring</td><td>sigmoid</td><td>sigmoid</td></tr>
+<tr><td>Load balance</td><td>Bias correction</td><td>Bias correction (aux-loss-free)</td></tr>
+<tr><td>Scaling factor</td><td>2.0</td><td>2.5</td></tr>
+<tr><td>Gate dtype</td><td>float32</td><td>float32</td></tr>
+<tr><td>Expert FFN dim</td><td>3072</td><td>2048</td></tr>
+<tr><td>Active params/token</td><td>~23B</td><td>~37B</td></tr>
+</table>
+
+<h2>Position Encoding Comparison</h2>
+<table>
+<tr><th></th><th>MiniMax M3</th><th>DeepSeek-V3</th></tr>
+<tr><td>Type</td><td>Partial RoPE (50%)</td><td>Decoupled RoPE in MLA</td></tr>
+<tr><td>RoPE dims</td><td>64 of 128</td><td>64 (separate k_rope stream)</td></tr>
+<tr><td>Non-RoPE dims</td><td>64 (position-free)</td><td>512 (latent, position-free)</td></tr>
+<tr><td>rope_theta</td><td>5,000,000</td><td>10,000 + YaRN</td></tr>
+<tr><td>Max context</td><td>1M (native)</td><td>128K (native) → 1M (extended)</td></tr>
+</table>
+
+<h2>When to Use Which</h2>
+<table>
+<tr><th>Scenario</th><th>Best Choice</th><th>Reason</th></tr>
+<tr><td>1M context, latency-sensitive decode</td><td>MSA</td><td>O(k·B_k) per token, not O(N)</td></tr>
+<tr><td>128K context, memory-constrained</td><td>MLA</td><td>Smallest KV cache footprint</td></tr>
+<tr><td>1M context, both memory + compute</td><td>MLA + DSA</td><td>Compressed storage + sparse compute</td></tr>
+<tr><td>Simple deployment, no custom kernel</td><td>MLA (no sparse)</td><td>Standard FlashAttention compatible</td></tr>
+</table>
+
+</body>
+</html>

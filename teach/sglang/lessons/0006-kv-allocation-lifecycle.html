@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第六课：KV allocation 生命周期</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script defer src="../assets/quiz.js"></script>
+</head>
+<body>
+<h1>KV allocation 生命周期</h1>
+<p class="outcome">学完本课，你能逐行解释 extend、decode 与 finish 三条路径怎样创建、提交、复用和释放 request row 与 physical KV slots。</p>
+
+<h2>Extend 是批量建表</h2>
+<ol>
+<li><code>prepare_for_extend</code> 计算每个 request 的 <code>prefix_lens</code>、<code>extend_lens</code> 与新 <code>seq_lens</code>。</li>
+<li><code>alloc_req_slots</code> 为新 request 分配 row；chunked request 可复用既有 row。</li>
+<li>allocator 为全部 extend tokens 分配 physical slots 或 pages。</li>
+<li><code>write_cache_indices</code> 先写 cached prefix indices，再写本轮新 slots。</li>
+<li>request 的 <code>kv_committed_len</code> 与 <code>kv_allocated_len</code> 更新到本轮 sequence end。</li>
+</ol>
+<pre><code>row r before: [prefix slot 8, prefix slot 9, ...]
+new slots:                              [31, 45, 46]
+row r after:  [8, 9, 31, 45, 46]
+                               └─ out_cache_loc ─┘</code></pre>
+<p class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/mem_cache/common.py#L452-L529">mem_cache/common.py:452-529</a> 与 <a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/managers/schedule_batch.py#L2011-L2145">schedule_batch.py:2011-2145</a>。</p>
+
+<h2>Decode 是每个活跃 request 追加一个位置</h2>
+<p>普通非-spec decode 为 batch 中每个 request 分配一个 slot。写入位置是旧的 <code>seq_lens</code>，随后 <code>prepare_for_decode</code> 把 request 的 committed/allocated lengths 与 batch sequence lengths 各加一。</p>
+<pre><code>old seq_len = 5
+allocate slot 90
+req_to_token[row, 5] = 90
+kv_committed_len += 1
+kv_allocated_len += 1
+seq_len += 1</code></pre>
+<p>顺序很重要：页表写在旧 length 指向的新 token 位置，然后 length 才表示包含该位置的新长度。Paged path 会根据上一 slot 和 page boundary 决定复用当前 page 还是获取新 page。<span class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/mem_cache/common.py#L581-L635">mem_cache/common.py:581-635</a> 与 <a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/managers/schedule_batch.py#L2618-L2678">schedule_batch.py:2618-2678</a>。</span></p>
+
+<h2>Scheduler 分配位置，Attention backend 完成读写</h2>
+
+<pre><code>Scheduler / allocator:
+  choose out_cache_loc + write request page table
+
+Attention backend for this layer:
+  write new K/V → token_to_kv_pool[out_cache_loc]
+  read history → page table / backend metadata → layer K/V buffer
+  run attention → output hidden states</code></pre>
+
+<p><code>out_cache_loc</code> 是 Scheduler 与 kernel/backend 的契约。Scheduler 不计算 K/V，只承诺本轮每个新 token 应写到哪些 physical slots；backend 在每一层先通过 <code>set_kv_buffer</code> 写入，再用本轮 metadata 读取完整可见 history。FlashInfer、Triton、MLA 或 sparse backend 的具体 layout 可以不同，但不能改变 request row 指向正确 physical ownership 这一不变量。<span class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/layers/attention/base_attn_backend.py#L155-L239">base_attn_backend.py:155-239</a> 与 <a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/layers/attention/flashinfer_backend.py#L1107-L1145">flashinfer_backend.py:1107-1145</a>。</span></p>
+
+<div class="invariant"><strong>Mapping 正确不代表 buffer 已写入</strong>Allocation 只建立 destination；该 layer forward 真正执行 <code>set_kv_buffer</code> 后，slot 才包含可读的 K/V。PD transfer 也遵守同一 destination-before-data 原则。</div>
+
+<h2>Committed 与 allocated 为什么分开</h2>
+<p>普通路径中二者经常相等，但 overlap 与 speculative paths 可能预分配尚未成为正式 sequence 的 slots。<code>kv_committed_len</code> 是已经可被请求语义承认的 KV frontier；<code>kv_allocated_len</code> 是当前实际占有的 physical frontier。释放时必须 trim overallocated tail，否则 allocator 账面会泄漏。</p>
+
+<h2>Finish 不是简单 free 全部 slots</h2>
+<pre><code>finish
+→ pop committed KV length
+→ insert page-aligned token/KV pairs into Radix Tree
+→ free duplicate slots already represented by canonical tree nodes
+→ free unaligned tail
+→ release prefix lock
+→ release request row</code></pre>
+<p>若 prefix cache 被禁用或这次明确不插入，则对应 slots 直接释放。开启 Radix Cache 时，仍可复用的 KV ownership 从 request 转交给 tree；request row 则回到 row pool。两个资源的生命周期因此在 finish 处发生分叉。<span class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/mem_cache/radix_cache.py#L437-L487">radix_cache.py:437-487</a> 与 <a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/mem_cache/common.py#L638-L693">mem_cache/common.py:638-693</a>。</span></p>
+
+<div class="invariant"><strong>Ownership 转移不等于复制</strong>finished request 插入 Radix Tree 后，tree 继续引用 canonical physical slots；只释放重复和尾部 slots。用 allocator free count 判断 cache 行为时必须考虑这次转移。</div>
+
+<h2>最小自检</h2>
+<div class="quiz" data-answer="3">
+<h3>普通 decode 前旧 <code>seq_len=5</code>，新分配 slot 90。页表应写到哪一格？</h3>
+<label><input type="radio" name="q6" value="1"><code>[row, 3]</code></label>
+<label><input type="radio" name="q6" value="2"><code>[row, 4]</code></label>
+<label><input type="radio" name="q6" value="3"><code>[row, 5]</code></label>
+<label><input type="radio" name="q6" value="4"><code>[row, 6]</code></label>
+<div class="feedback correct" aria-live="polite">正确。旧长度 5 表示已有 positions 0 到 4，新 token 写在 position 5，然后 sequence length 增至 6。</div>
+<div class="feedback incorrect" aria-live="polite">不对。sequence position 从 0 开始；已有 5 个 token 占 positions 0 到 4，新 slot 写到 position 5。</div>
+</div>
+<div class="quiz" data-answer="1">
+<h3>Scheduler 已分配 <code>out_cache_loc</code> 后，physical slot 何时真正包含本层 K/V？</h3>
+<label><input type="radio" name="q6b" value="1">Backend 执行 KV 写入以后</label>
+<label><input type="radio" name="q6b" value="2">Request 进入 waiting 以后</label>
+<label><input type="radio" name="q6b" value="3">Radix match 返回以前</label>
+<label><input type="radio" name="q6b" value="4">Allocator 返回 index 以前</label>
+<div class="feedback correct" aria-live="polite">正确。Allocation 建立 destination，attention layer 的 backend 写入后 slot 才含真实 K/V。</div>
+<div class="feedback incorrect" aria-live="polite">不对。Index allocation 只保留位置；真实 K/V 来自该 layer forward 的 backend write。</div>
+</div>
+
+</body>
+</html>

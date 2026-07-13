@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>参考卡：GLM-5.2 上游 SGLang Day-0 机制拆解</title>
+<style>
+  body { font-family: 'Palatino Linotype', 'Book Antiqua', Palatino, serif; max-width: 960px; margin: 2em auto; padding: 0 1.5em; color: #222; line-height: 1.6; }
+  h1 { font-size: 1.5em; border-bottom: 3px solid #6a1b9a; padding-bottom: 0.3em; }
+  h2 { font-size: 1.18em; margin-top: 1.8em; color: #4a148c; border-left: 4px solid #6a1b9a; padding-left: 0.6em; }
+  table { border-collapse: collapse; margin: 0.7em 0; width: 100%; }
+  th, td { border: 1px solid #bbb; padding: 0.35em 0.6em; text-align: left; font-size: 0.84em; vertical-align: top; }
+  th { background: #f3e5f5; }
+  code { background: #f0f0f0; padding: 0.1em 0.32em; border-radius: 3px; font-size: 0.8em; font-family: 'SF Mono', Menlo, monospace; }
+  .file { color: #6a1b9a; font-family: 'SF Mono', Menlo, monospace; font-size: 0.78em; }
+  pre { background: #f8f8f8; padding: 0.8em; border-radius: 4px; overflow-x: auto; font-size: 0.78em; line-height: 1.45; }
+  .nav { font-size: 0.85em; color: #888; margin-bottom: 1.5em; }
+  .footer { margin-top: 2.5em; padding-top: 1em; border-top: 1px solid #ddd; font-size: 0.8em; color: #666; }
+  .hot { color: #c62828; font-weight: bold; }
+  @media print { body { max-width: 100%; font-size: 10.5px; } h2 { page-break-after: avoid; } table, pre { page-break-inside: avoid; } .nav, .footer { display: none; } }
+</style>
+</head>
+<body>
+<div class="nav"><a href="../lessons/0001-glm52-architecture-indexshare.html">课 01</a> · <a href="../lessons/0002-sglang-day0-enablement.html">课 02</a> · <a href="./architecture-cheatsheet.html">架构速查卡</a> · <a href="./glossary.html">术语表</a></div>
+
+<h1>GLM-5.2 上游 SGLang Day-0 机制拆解</h1>
+<p style="font-size:0.84em;color:#555;">基准：<span class="file">PUBLIC_REPO/sglang @b8a73bfba0</span>（2026-06-16）。GLM-5.2 在上游<strong>已支持</strong>，本卡是其真实机制的压缩；末尾给出 <code>aiak_sglang</code> fork 的 cherry-pick 清单。</p>
+
+<h2>A. 8 个 trick（上游怎么做到"零新文件"）</h2>
+<table>
+<tr><th>Trick</th><th>做法</th><th>file:line</th></tr>
+<tr><td>能力探测&gt;身份判断</td><td><code>index_topk is not None</code> 而非 <code>arch=="GLM"</code> 决定走 DSA</td><td class="file">model_config.py:103</td></tr>
+<tr><td>继承而非重写</td><td>3 行子类 <code>DeepseekV2ForCausalLM</code>，forward 全继承</td><td class="file">glm4_moe.py:1481</td></tr>
+<tr><td>显式传名绕硬检查</td><td><code>determine_num_fused_shared_experts("GlmMoeDsa…")</code></td><td class="file">glm4_moe.py:1483</td></tr>
+<tr><td>注册靠 EntryClass</td><td><code>EntryClass=[Glm4Moe…, GlmMoeDsa…]</code> 一行</td><td class="file">glm4_moe.py:1486</td></tr>
+<tr><td>HF config 字段抢救</td><td>从 raw config.json 重读 <code>qk_rope_head_dim</code>/<code>index_topk_freq</code></td><td class="file">config.py:70</td></tr>
+<tr><td>改名复用 nextn</td><td>draft 架构名改写为 <code>DeepseekV3ForCausalLMNextN</code></td><td class="file">model_config.py:421</td></tr>
+<tr><td>调用栈传状态</td><td>层间共享 index 用循环局部变量传，无全局 cache</td><td class="file">deepseek_v2.py:2495</td></tr>
+<tr><td>自动选后端</td><td><code>is_deepseek_dsa</code>→<code>attention_backend="dsa"</code>（nsa 已废弃别名）</td><td class="file">server_args.py:1991</td></tr>
+</table>
+
+<h2>B. IndexShare 在代码里（层间复用）</h2>
+<table>
+<tr><th>步骤</th><th>机制</th><th>file:line</th></tr>
+<tr><td>每层算两个布尔</td><td><code>skip_topk=(layer_id-1)%freq!=0</code>（本层复用上层）<br><code>next_skip_topk=layer_id%freq!=0</code>（下层复用本层）</td><td class="file">deepseek_v2.py:1604</td></tr>
+<tr><td>层内门控</td><td><code>if not skip_topk: topk=indexer(...) else: 复用 prev_topk_indices</code></td><td class="file">forward_mla.py:261</td></tr>
+<tr><td>是否下传</td><td><code>next_skip_topk?</code> 返回 <code>(out, topk_indices)</code> : <code>(out, None)</code></td><td class="file">forward_mla.py:748</td></tr>
+<tr><td>串联载体</td><td>层循环局部变量 <code>topk_indices</code>，<code>prev_topk_indices=topk_indices</code></td><td class="file">deepseek_v2.py:2495</td></tr>
+</table>
+<pre>freq=4, offset=3 → 重算层 = [0,1,2, 6,10,14,18,...]   (与 checkpoint indexer 权重层一致)
+L0,1,2: skip=F(自算) | L3,4,5: skip=T(复用L2) | L6: skip=F(重算) | L7,8,9: skip=T ...</pre>
+<p style="font-size:0.82em;"><span class="hot">坑</span>：shared 层 checkpoint <strong>无 indexer 权重</strong>，门控<strong>禁止</strong> <code>or prev_topk_indices is None</code> 的 fallback（否则用未初始化 indexer 产生 &gt;topk 乱序）。唯一例外 MTP 层（有自己权重）。见 <span class="file">forward_mla.py:253-260</span> 注释。</p>
+
+<h2>C. MTP 迭代复用（时间维度，第二条通道）</h2>
+<table>
+<tr><th>项</th><th>机制</th><th>file:line</th></tr>
+<tr><td>开关</td><td><code>index_share_for_mtp_iteration and topk==1</code></td><td class="file">eagle_worker_v2.py:193</td></tr>
+<tr><td>载体</td><td><code>forward_batch.topk_indices</code> 字段（局部变量跨 step 活不过去）</td><td class="file">forward_batch_info.py:377</td></tr>
+<tr><td>循环</td><td>step1 算→写回 batch；后续 step 读 batch 复用；结束清场</td><td class="file">deepseek_nextn.py:227 / eagle:555,625</td></tr>
+</table>
+<p style="font-size:0.82em;"><span class="hot">坑</span>：仅 <code>topk==1</code>。topk&gt;1 时 <code>select_top_k_tokens</code> 重排 row，复用 index 会与 token 行 desync。</p>
+
+<h2>D. 复用确认（无需改）</h2>
+<table>
+<tr><th>项</th><th>结论</th><th>file:line</th></tr>
+<tr><td>FP8 block-quant</td><td><code>weight_block_size=[128,128]</code> config 驱动；GLM 走标准 FP8 loader（非 Quark MXFP4）</td><td class="file">fp8.py:146 / deepseek_weight_loader.py:577</td></tr>
+<tr><td>MoE 256/8/1</td><td><code>Glm4MoeSparseMoeBlock</code> + <code>Glm4MoeGate</code>(FP32) + DeepSeekV3 routing(sigmoid+noaux)</td><td class="file">glm4_moe.py:395,371</td></tr>
+<tr><td>first_k_dense=3</td><td>DeepseekV2DecoderLayer 内按 layer_id 自动切</td><td class="file">deepseek_v2.py:2118</td></tr>
+<tr><td>Indexer 模块</td><td>MQA：q_lora→32×128, wk(6144→128), k_norm, weights_proj, fp8 deep_gemm MQA logits</td><td class="file">dsa_indexer.py:293</td></tr>
+</table>
+
+<h2>E. 给 aiak_sglang fork 的 cherry-pick 清单</h2>
+<p style="font-size:0.84em;">fork 当前 <code>GlmMoeDsa</code>/<code>index_share</code> 全零匹配。<strong>不要手写</strong>，按上游 pick：</p>
+<pre>1. is_deepseek_dsa() 名单加 "GlmMoeDsaForCausalLM"        (model_config.py)
+2. glm4_moe.py 末尾 3 行子类 + EntryClass 加 GlmMoeDsa
+3. config.py HF 字段抢救块 (qk_rope_head_dim / index_topk_freq)
+4. server_args.py DSA 名单 + dsa 后端自动选择
+5. DSA 通用代码的 skip_topk / next_skip_topk / prev_topk_indices 层间传递
+   (deepseek_v2.py + forward_mla.py + forward_batch_info 字段)
+6. model_config.py draft 改名 GlmMoeDsa→DeepseekV3ForCausalLMNextN
+7. eagle/standalone worker 的 index_share_for_mtp_iteration
+验证: 先跑非 MTP / 单 batch decode+prefill，确认 dsa 后端激活、index 不报 >topk</pre>
+
+<div class="footer">Day-0 拆解卡 · 源自 PUBLIC_REPO/sglang @b8a73bfba0 代码实证 · 配合 <a href="../lessons/0002-sglang-day0-enablement.html">课 02</a></div>
+</body>
+</html>

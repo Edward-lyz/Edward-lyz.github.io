@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 00: Speculative Decoding 通用验证机制 — Rejection Sampling</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+  onload="renderMathInElement(document.body, {delimiters:[{left:'\\[',right:'\\]',display:true},{left:'\\(',right:'\\)',display:false}]})"></script>
+<script defer src="../assets/quiz.js"></script>
+</head>
+<body>
+
+<h1>Lesson 00：Speculative Decoding 通用验证机制</h1>
+
+<p class="lesson-meta">
+<strong>前置阅读</strong>：<a href="../reference/glossary.html">术语表</a><br>
+<strong>本课定位</strong>：本课内容是所有 speculative decoding 算法（EAGLE/EAGLE2/EAGLE3/DFlash/DSpark）共用的验证基础设施。无论 drafter 如何生成候选 token，target 侧的校验机制完全一致。<br>
+<strong>本课目标</strong>：理解主模型如何校验 draft token、拒绝后如何 resample、bonus token 从哪来，并严格证明输出分布精确等于 target 分布（lossless）。
+</p>
+
+<!-- ═══════════ 一图流 ═══════════ -->
+<h2>一图流：逐 token 校验、拒绝与 bonus</h2>
+
+<iframe src="../assets/verification-animation.html" title="Target Verification 动画演示" style="width:100%; aspect-ratio:5/4; border:1px solid #333; border-radius:8px;" loading="lazy"></iframe>
+
+<p>动画主线展示「拒绝 + resample」（Step 1–8），Step 9–10 切换到「全接受 + bonus」对比。两者覆盖 verification 的全部出口。</p>
+
+<!-- ═══════════ 背景 ═══════════ -->
+<h2>1. 背景：为什么 verification 不能"逐个串行验证"</h2>
+
+<h3>1.1 Draft 可能错，target 必须兜底</h3>
+
+<p>Drafter 是个轻量模型，它的提议分布 \(q\) 和 target 的真实分布 \(p\) 不一致。直接采纳 draft token 会让最终生成分布偏离 \(p\)，破坏输出质量。所以每个 draft token 必须经过 target 校验。</p>
+
+<h3>1.2 朴素方法：逐个 target forward → 串行，没加速</h3>
+
+<p>最朴素的校验：每生成一个 draft token，就跑一次 target forward 比对分布。但这把 target forward 串行化了——加速效果归零（甚至更慢，因为多了 draft 开销）。speculative decoding 的全部收益来自 <strong>并行验证</strong>。</p>
+
+<h3>1.3 关键洞察：target 可以一次前传验证 K 个 token</h3>
+
+<p>Transformer 的 attention 是因果的：位置 \(i\) 的输出只依赖 \(\le i\) 的输入。因此把 \([x_0, \tilde{x}_1, \ldots, \tilde{x}_K]\) 一次性送入 target，<strong>一次前传</strong>就能得到每个位置对应的 next-token 分布：</p>
+
+<table>
+<tr><th>Target 输出位置</th><th>预测的是</th><th>用途</th></tr>
+<tr><td>位置 0（输入 \(x_0\)）</td><td>\(x_1\) 的分布 → \(p_1\)</td><td>验证 \(\tilde{x}_1\)</td></tr>
+<tr><td>位置 1（输入 \(\tilde{x}_1\)）</td><td>\(x_2\) 的分布 → \(p_2\)</td><td>验证 \(\tilde{x}_2\)</td></tr>
+<tr><td>位置 \(k-1\)（输入 \(\tilde{x}_{k-1}\)）</td><td>\(x_k\) 的分布 → \(p_k\)</td><td>验证 \(\tilde{x}_k\)</td></tr>
+<tr><td>位置 \(K\)（输入 \(\tilde{x}_K\)）</td><td>\(x_{K+1}\) 的分布 → \(p_{K+1}\)</td><td>bonus token 来源</td></tr>
+</table>
+
+<p>关键：<strong>验证 K 个 draft token 只需 1 次 target forward</strong>（算出 K+1 个分布）。但"算出分布"不等于"直接采纳"——draft 的 \(\tilde{x}_k\) 是从 \(q_k\) 采的，不是从 \(p_k\) 采的。需要一个机制把"从 \(q\) 采的样本"变成"服从 \(p\) 的样本"。<strong>这就是 rejection sampling。</strong></p>
+
+<!-- ═══════════ 创新点 ═══════════ -->
+<h2>2. 创新点：Rejection Sampling 的三个设计</h2>
+
+<table>
+<tr><th>#</th><th>设计</th><th>做什么</th><th>解决什么问题</th></tr>
+<tr><td>①</td><td>Acceptance rule</td><td>对 \(\tilde{x}_k\) 以 \(\min(1, p_k(\tilde{x}_k)/q_k(\tilde{x}_k))\) 的概率接受</td><td>把"从 q 采的样本"改造成"服从 p 的样本"</td></tr>
+<tr><td>②</td><td>Residual resample</td><td>拒绝时从 \(\text{norm}(\max(0, p_k - q_k))\) 采样一个修正 token，然后停止本轮</td><td>填补 q 低估的部分，保证 lossless</td></tr>
+<tr><td>③</td><td>Bonus token</td><td>全接受时从 \(p_{K+1}\) 免费采样一个 token</td><td>利用前传已算出的分布，每轮至少产出 1 个 token</td></tr>
+</table>
+
+<div class="key-insight">
+<strong>核心思想</strong>：rejection sampling 不是"挑出对的、扔掉错的"，而是<strong>一个概率构造</strong>——通过精心设计的接受概率和拒绝后的残差采样，让最终输出分布精确等于 \(p\)。这正是 lossless guarantee 的来源。
+</div>
+
+<!-- ═══════════ 公式推导 ═══════════ -->
+<h2>3. 公式推导</h2>
+
+<h3>3.1 符号约定</h3>
+
+<p>为简洁，本课用 \(q_k \equiv p_k^d\)（draft 提议分布）、\(p_k \equiv p_k^t\)（target 真实分布），与术语表一致。给定 anchor \(x_0\) 和已接受前缀：</p>
+
+<ul>
+<li>\(\tilde{x}_k \sim q_k\)：drafter 在位置 \(k\) 提议的 token</li>
+<li>\(p_k(\cdot)\)：target 在位置 \(k\) 的真实分布（一次前传算出，验证 \(\tilde{x}_k\) 用）</li>
+<li>\(p_{K+1}(\cdot)\)：target 预测位置 \(K+1\) 的分布（bonus 来源，同一次前传顺便算出）</li>
+</ul>
+
+<h3>3.2 Acceptance rule 的构造</h3>
+
+<p>对每个位置 \(k\)，给定 draft 提议 \(\tilde{x}_k\)，定义接受概率：</p>
+
+<div class="math-block">
+<span class="label">Acceptance probability（Leviathan 2023 / Chen 2023）</span>
+\[r_k(\tilde{x}_k) = \min\!\left(1,\; \frac{p_k(\tilde{x}_k)}{q_k(\tilde{x}_k)}\right)\]
+</div>
+
+<div class="derivation">
+<div class="step">
+<span class="step-label">Step 1: 为什么是比值 \(p/q\)？</span>
+\(\tilde{x}_k\) 是从 \(q_k\) 采的，它被采中的概率是 \(q_k(\tilde{x}_k)\)。我们想让它"看起来像"从 \(p_k\) 采的。如果 \(p_k(\tilde{x}_k) > q_k(\tilde{x}_k)\)（target 比 draft 更看好这个 token），应该几乎总是接受 → \(r = 1\)。如果 \(p_k < q_k\)（draft 高估了），应该按比例打折 → \(r = p_k/q_k < 1\)。这正是 \(\min(1, p/q)\)。
+</div>
+<div class="step">
+<span class="step-label">Step 2: 具体判定</span>
+采样 \(u \sim \text{Uniform}(0,1)\)。<br>
+• 若 \(u \le r_k\)：接受 \(\tilde{x}_k\)，输出它，继续校验 \(\tilde{x}_{k+1}\)。<br>
+• 若 \(u > r_k\)：拒绝 \(\tilde{x}_k\)，进入残差 resample（3.4 节），<strong>本轮停止</strong>。
+</div>
+<div class="step">
+<span class="step-label">Step 3: 为什么拒绝就停止？</span>
+\(\tilde{x}_{k+1}\) 是 drafter 在"假设 \(\tilde{x}_k\) 被采纳"的前提下生成的。一旦 \(\tilde{x}_k\) 被拒，\(\tilde{x}_{k+1}\) 的生成前提不成立，它的 \(q_{k+1}\) 不再有效。所以 \(k\) 之后的 draft token 全部作废，本轮到此截断。
+</div>
+</div>
+
+<h3>3.3 Lossless guarantee 的证明（核心）</h3>
+
+<p><strong>命题</strong>：对每个位置 \(k\)，在给定到达该位置（前 \(k-1\) 个全接受）的条件下，最终输出 token 的分布精确等于 \(p_k\)。</p>
+
+<p>设最终输出值为 \(v\)。它有两条产出路径：</p>
+
+<p><strong>路径 A（接受）</strong>：\(\tilde{x}_k = v\) 且被接受。</p>
+<div class="math-block">
+<span class="label">路径 A 的概率</span>
+\[P_A(v) = q_k(v) \cdot r_k(v) = q_k(v) \cdot \min\!\left(1, \frac{p_k(v)}{q_k(v)}\right) = \min\!\bigl(q_k(v),\; p_k(v)\bigr)\]
+</div>
+
+<div class="derivation">
+<div class="step">
+<span class="step-label">推导依据</span>
+\(\tilde{x}_k = v\) 的概率是 \(q_k(v)\)（从 draft 分布采的）。给定 \(\tilde{x}_k=v\)，接受概率是 \(r_k(v)\)。两者独立相乘。最后一步：\(q \cdot \min(1, p/q)\)，分情况——若 \(p \ge q\) 则 \(\min=1\)，结果 \(= q\)；若 \(p < q\) 则 \(\min=p/q\)，结果 \(= p\)。合并即 \(\min(q, p)\)。
+</div>
+</div>
+
+<p><strong>路径 B（拒绝后 resample 出 \(v\)）</strong>：先算总拒绝概率，再算 resample 出 \(v\) 的概率。</p>
+
+<div class="math-block">
+<span class="label">总拒绝概率</span>
+\[P(\text{reject at } k) = \sum_x q_k(x)\bigl(1 - r_k(x)\bigr) = 1 - \sum_x \min\!\bigl(q_k(x), p_k(x)\bigr)\]
+</div>
+
+<div class="derivation">
+<div class="step">
+<span class="step-label">Step 1: 对所有可能的 \(\tilde{x}_k\) 求和</span>
+拒绝概率 = \(\sum_x P(\tilde{x}_k=x) \cdot P(\text{reject} \mid \tilde{x}_k=x) = \sum_x q_k(x)(1 - r_k(x))\)。
+</div>
+<div class="step">
+<span class="step-label">Step 2: 代入 \(r_k\) 并用恒等式</span>
+\(\sum_x q_k(x) r_k(x) = \sum_x \min(q_k(x), p_k(x))\)（由路径 A 同理）。所以拒绝概率 \(= 1 - \sum_x \min(q_k(x), p_k(x))\)。
+</div>
+</div>
+
+<p>现在引入一个关键恒等式：</p>
+
+<div class="math-block">
+<span class="label">恒等式：\(\sum_x \min(q, p) = 1 - \text{TV}(p, q)\)</span>
+\[\sum_x \min\!\bigl(q(x), p(x)\bigr) = 1 - \text{TV}(p, q), \quad \text{TV}(p, q) = \tfrac{1}{2}\sum_x |p(x) - q(x)|\]
+</div>
+
+<div class="derivation">
+<div class="step">
+<span class="step-label">证明</span>
+利用 \(\min(a,b) = \frac{a+b-|a-b|}{2}\)：<br>
+\(\sum_x \min(q,p) = \frac{\sum_x(q+p) - \sum_x|q-p|}{2} = \frac{2 - \sum_x|p-q|}{2} = 1 - \text{TV}(p,q)\)。<br>
+其中用了 \(\sum q = \sum p = 1\)（都是概率分布）。
+</div>
+</div>
+
+<p>因此总拒绝概率 \(= \text{TV}(p_k, q_k)\)。</p>
+
+<p>接下来算残差分布。拒绝时从如下分布 resample：</p>
+
+<div class="math-block">
+<span class="label">Residual distribution</span>
+\[p'_k(v) = \frac{\max\!\bigl(0,\; p_k(v) - q_k(v)\bigr)}{\displaystyle\sum_y \max\!\bigl(0,\; p_k(y) - q_k(y)\bigr)}\]
+</div>
+
+<div class="derivation">
+<div class="step">
+<span class="step-label">Step 1: 分母等于什么？</span>
+注意 \(p - q\) 的正部之和 = 负部之和的绝对值（因为 \(\sum(p-q)=0\)，正负抵消）。所以：<br>
+\(\sum_y \max(0, p(y)-q(y)) = \frac{1}{2}\sum_y |p(y)-q(y)| = \text{TV}(p, q)\)。
+</div>
+<div class="step">
+<span class="step-label">Step 2: 残差分布的直觉</span>
+\(q\) 已经"用掉"了 \(\min(p,q)\) 那部分（路径 A 接受的部分）。剩下的 \(p - q\) 在正的地方是 target 比 draft 多出来的概率——只从这些"多出来"的 token 采。draft 高估的 token（\(p < q\)）残差为 0，被排除。
+</div>
+</div>
+
+<p>现在合并路径 B：</p>
+
+<div class="math-block">
+<span class="label">路径 B 的概率</span>
+\[P_B(v) = P(\text{reject}) \cdot p'_k(v) = \text{TV}(p_k, q_k) \cdot \frac{\max(0, p_k(v) - q_k(v))}{\text{TV}(p_k, q_k)} = \max\!\bigl(0,\; p_k(v) - q_k(v)\bigr)\]
+</div>
+
+<p>最后合并 A + B：</p>
+
+<div class="math-block">
+<span class="label">Lossless guarantee</span>
+\[P_{\text{out}}(v) = P_A(v) + P_B(v) = \min\!\bigl(q_k(v), p_k(v)\bigr) + \max\!\bigl(0,\; p_k(v) - q_k(v)\bigr) = p_k(v)\]
+</div>
+
+<div class="derivation">
+<div class="step">
+<span class="step-label">验证恒等式 \(\min(q,p) + \max(0, p-q) = p\)（分情况）</span>
+• 若 \(p_k(v) \ge q_k(v)\)：\(\min = q_k(v)\)，\(\max(0, p-q) = p_k(v) - q_k(v)\)，和 \(= q_k(v) + p_k(v) - q_k(v) = p_k(v)\) ✓<br>
+• 若 \(p_k(v) < q_k(v)\)：\(\min = p_k(v)\)，\(\max(0, p-q) = 0\)，和 \(= p_k(v)\) ✓<br>
+两种情况都等于 \(p_k(v)\)。<strong>输出分布精确等于 target 分布，证明完毕。</strong>
+</div>
+<div class="step">
+<span class="step-label">含义</span>
+无论 draft 分布 \(q\) 多差，rejection sampling 都能保证最终输出服从 \(p\)。\(q\) 越接近 \(p\)，接受率越高（加速越多）；\(q\) 越差，接受率越低，但输出分布<strong>不变</strong>——只是慢。这是 speculative decoding "lossless" 性质的数学根基。
+</div>
+</div>
+
+<h3>3.4 拒绝后 resample 的正确性（路径 B 的本质）</h3>
+
+<p>路径 B 已在 3.3 证完。这里单独强调它的工程含义：</p>
+
+<div class="derivation">
+<div class="step">
+<span class="step-label">为什么不用 \(p_k\) 直接采？</span>
+如果拒绝后直接从 \(p_k\) 采，输出分布会变成 \(\min(q,p) + P(\text{reject})\cdot p_k\)，这<strong>不等于</strong> \(p_k\)（多算了 \(q\) 已经覆盖的部分）。必须从残差 \(\max(0, p-q)\) 采，扣除 \(q\) 的贡献，才能精确补齐。
+</div>
+<div class="step">
+<span class="step-label">工程实现</span>
+残差分布的计算：对每个 token \(v\)，算 \(\max(0, \log p_k(v) - \log q_k(v))\)（log 空间相减再做 relu），归一化后采样。复杂度 O(V)，与一次采样同阶。
+</div>
+</div>
+
+<h3>3.5 Bonus token：全接受时的免费产出</h3>
+
+<p>当所有 \(K\) 个 draft token 都被接受时，target 的那一次前传<strong>已经顺便算出了 \(p_{K+1}\)</strong>（位置 \(K\) 的 next-token 分布，预测第 \(K+1\) 个 token）。直接从 \(p_{K+1}\) 采样一个 bonus token，无需额外前传。</p>
+
+<div class="derivation">
+<div class="step">
+<span class="step-label">Step 1: 为什么是免费的？</span>
+验证 \(\tilde{x}_K\) 需要 target 在位置 \(K-1\) 的输出 \(p_K\)。而 target 前传是连续的，输入 \(\tilde{x}_K\) 后位置 \(K\) 自然输出 \(p_{K+1}\)。这个分布本来就算出来了，不采样就浪费了。
+</div>
+<div class="step">
+<span class="step-label">Step 2: 为什么 bonus 服从 \(p\)？</span>
+bonus 直接从 \(p_{K+1}\) 采样，没有经过 \(q\) 提议，所以天然服从 target 分布，无需任何修正。<strong>bonus 不被校验</strong>——它本身就是 target 的直接采样。
+</div>
+<div class="step">
+<span class="step-label">Step 3: 每轮至少产出 1 个 token</span>
+无论接受到第几个：若中途拒绝，产出 \(\le K\) 个接受 token + 1 个 resample token；若全接受，产出 \(K\) 个接受 token + 1 个 bonus token。两种情况都<strong>至少产出 1 个 token</strong>。这是 speculative decoding 不会比朴素解码更慢的根本原因（最差情况退化为每轮 1 个 token = 朴素速度）。
+</div>
+</div>
+
+<h3>3.6 Per-token acceptance probability = \(1 - \text{TV}\)</h3>
+
+<p>位置 \(k\) 被接受的概率（条件于到达该位置）：</p>
+
+<div class="math-block">
+<span class="label">Per-token acceptance probability</span>
+\[c_k = P(\text{accept at } k \mid \text{reached}) = \sum_x q_k(x)\, r_k(x) = \sum_x \min\!\bigl(q_k(x), p_k(x)\bigr) = 1 - \text{TV}(p_k, q_k)\]
+</div>
+
+<div class="derivation">
+<div class="step">
+<span class="step-label">推导</span>
+接受概率 = 对所有可能的 \(\tilde{x}_k\) 求和 \(\sum_x q_k(x) r_k(x)\)。由 3.3 路径 A，\(q_k(x) r_k(x) = \min(q_k(x), p_k(x))\)。再由恒等式 \(\sum \min = 1 - \text{TV}\)。即得 \(c_k = 1 - \text{TV}(p_k, q_k)\)。
+</div>
+<div class="step">
+<span class="step-label">直觉</span>
+\(p\) 与 \(q\) 完全一致时 \(\text{TV}=0\)，接受率 100%；\(p\) 与 \(q\) 完全不交时 \(\text{TV}=1\)，接受率 0%。接受率线性正比于两个分布的"重叠程度"。这就是 DSpark 拼命减小 suffix decay（让 \(q\) 逼近 \(p\)）的直接动力——每降低一点 TV，接受率就线性提升。
+</div>
+</div>
+
+<h3>3.7 Expected accepted length \(\tau\)</h3>
+
+<p>设 prefix survival probability \(a_k = \prod_{i=1}^k c_i\)（前 \(k\) 个全接受的联合概率）。一轮平均被接受的 draft token 数：</p>
+
+<div class="math-block">
+<span class="label">Expected accepted draft tokens</span>
+\[E[\#\text{accepted draft}] = \sum_{k=1}^{K} P(\text{at least } k \text{ accepted}) = \sum_{k=1}^{K} a_k\]
+</div>
+
+<div class="derivation">
+<div class="step">
+<span class="step-label">推导</span>
+"至少接受 \(k\) 个" = "前 \(k\) 个全接受" = \(a_k\)。接受数的期望 \(= \sum_{k=1}^{K} P(\#\text{accepted} \ge k) = \sum_{k=1}^{K} a_k\)（期望的尾概率求和公式）。
+</div>
+</div>
+
+<p>加上必然产出的 1 个 bonus/resample token：</p>
+
+<div class="math-block">
+<span class="label">Expected accepted length（含 bonus）</span>
+\[\tau = 1 + \sum_{k=1}^{K} a_k = 1 + \sum_{k=1}^{K} \prod_{i=1}^{k} c_i\]
+</div>
+
+<div class="derivation">
+<div class="step">
+<span class="step-label">那个 "+1" 是什么？</span>
+就是 3.5 节的 bonus/resample token——无论接受多少个，每轮必然多产出 1 个。这 1 个对应术语表中 anchor/bonus 的定义："target 验证时即使全部 draft 被拒也会产出 1 个新 token"。
+</div>
+<div class="step">
+<span class="step-label">与 DSpark 的衔接</span>
+DSpark 的 confidence head 预测 \(c_k\)，硬件感知 scheduler 用 \(a_k = \prod c_i\) 和 SPS profile 决定每轮验证到第几个 token 以最大化系统吞吐 \(\Theta = \tau \cdot \text{SPS}(B)\)。这是下一课（Confidence-Scheduled Verification）的主题。
+</div>
+</div>
+
+<!-- ═══════════ 小结 ═══════════ -->
+<h2>4. 小结</h2>
+
+<div class="key-insight">
+<strong>Target Verification 的三个关键事实</strong>：<br><br>
+① <strong>Acceptance rule</strong>：\(r_k = \min(1, p_k/q_k)\)。draft 高估的 token 按比例打折，draft 低估的 token 全接受。<br><br>
+② <strong>Lossless</strong>：接受路径 \(\min(q,p)\) + 拒绝路径 \(\max(0,p-q)\) = \(p\)。<strong>无论 \(q\) 多差，输出分布恒等于 \(p\)</strong>，只是接受率下降、变慢。<br><br>
+③ <strong>每轮 ≥1 token</strong>：拒绝时产出 1 个 resample token（从残差采），全接受时产出 1 个 bonus token（从 \(p_{K+1}\) 采）。最差情况退化为朴素解码速度。<br><br>
+<strong>接受率公式</strong>：\(c_k = 1 - \text{TV}(p_k, q_k)\)。这是 drafter 质量的唯一度量——TV 越小，加速越多。
+</div>
+
+<table>
+<tr><th>场景</th><th>接受情况</th><th>本轮产出</th><th>最后一个 token 的来源</th><th>下轮 anchor</th></tr>
+<tr><td>中途拒绝</td><td>前 \(j\) 个接受，第 \(j+1\) 拒</td><td>\(\tilde{x}_1 \ldots \tilde{x}_j\) + resample</td><td>残差分布 \(\text{norm}(\max(0, p-q))\)</td><td>resample token</td></tr>
+<tr><td>全接受</td><td>\(K\) 个全接受</td><td>\(\tilde{x}_1 \ldots \tilde{x}_K\) + bonus</td><td>\(p_{K+1}\)（前传顺便算出）</td><td>bonus token</td></tr>
+</table>
+
+<table>
+<tr><th>量</th><th>公式</th><th>含义</th></tr>
+<tr><td>接受概率</td><td>\(r_k(v) = \min(1, p_k(v)/q_k(v))\)</td><td>给定 draft 提议 \(v\)，被接受的概率</td></tr>
+<tr><td>Per-token acceptance</td><td>\(c_k = 1 - \text{TV}(p_k, q_k)\)</td><td>位置 \(k\) 的平均接受率</td></tr>
+<tr><td>Prefix survival</td><td>\(a_k = \prod_{i \le k} c_i\)</td><td>前 \(k\) 个全接受的概率</td></tr>
+<tr><td>Expected length</td><td>\(\tau = 1 + \sum_{k=1}^{K} a_k\)</td><td>每轮平均产出 token 数（含 bonus）</td></tr>
+</table>
+
+<!-- ═══════════ Quiz ═══════════ -->
+<h2>5. Quiz</h2>
+
+<div class="quiz" data-answer="2">
+  <h4>Q1: 拒绝 draft token 后，为什么从残差分布 resample 而不直接从 \(p_k\) 采？</h4>
+  <label><input type="radio" name="q1" value="1"> 从 \(p_k\) 采计算量太大，残差分布更稀疏采样更快</label>
+  <label><input type="radio" name="q1" value="2"> 直接采 \(p_k\) 会与接受路径重叠，导致输出分布偏离 \(p_k\)；残差扣除 \(q\) 已覆盖部分才能精确补齐</label>
+  <label><input type="radio" name="q1" value="3"> 残差分布是 \(p_k\) 的无偏估计，方差更小</label>
+  <div class="feedback correct">✓ 正确！接受路径已经覆盖了 \(\min(q,p)\) 那部分概率。若再从完整 \(p_k\) 采，这部分被重复计算，输出 = \(\min(q,p) + P(\text{reject})\cdot p_k \neq p_k\)。残差 \(\max(0,p-q)\) 恰好是 \(p\) 中尚未被 \(q\) 覆盖的部分，补上后 \(\min(q,p)+\max(0,p-q)=p\)，精确 lossless。</div>
+  <div class="feedback incorrect">✗ 计算量不是原因——残差采样和直接采 \(p_k\) 都是 O(V)。问题在分布正确性：直接采 \(p_k\) 会让接受路径覆盖的 \(\min(q,p)\) 部分被重复计入，破坏 lossless。</div>
+</div>
+
+<div class="quiz" data-answer="3">
+  <h4>Q2: Bonus token 为什么是"免费"的？</h4>
+  <label><input type="radio" name="q2" value="1"> Bonus token 由 drafter 生成，不占用 target 计算资源</label>
+  <label><input type="radio" name="q2" value="2"> Bonus token 不需要校验，跳过了 rejection sampling</label>
+  <label><input type="radio" name="q2" value="3"> 验证最后一个 draft token 时 target 前传已顺便算出 \(p_{K+1}\)，直接采样无需额外前传</label>
+  <div class="feedback correct">✓ 正确！Target 一次前传输入 \([x_0, \tilde{x}_1, \ldots, \tilde{x}_K]\)，位置 \(K\) 的输出天然是 \(p_{K+1}\)（预测第 \(K+1\) 个 token）。这个分布在验证 \(\tilde{x}_K\) 时就算出来了，不采样就浪费。Bonus 直接从 \(p_{K+1}\) 采，天然服从 target 分布，无需校验。</div>
+  <div class="feedback incorrect">✗ Bonus 不是 drafter 生成的，它来自 target 的 \(p_{K+1}\)。它确实不校验，但"免费"的根本原因是计算复用——前传已经算出了这个分布，不采样就浪费了。</div>
+</div>
+
+<div class="quiz" data-answer="1">
+  <h4>Q3: 若 draft 分布 \(q\) 极差（与 \(p\) 完全不交），speculative decoding 会怎样？</h4>
+  <label><input type="radio" name="q3" value="1"> 每轮第一个 token 即被拒，产出 1 个 resample token，退化为朴素解码速度（不更慢）</label>
+  <label><input type="radio" name="q3" value="3"> 输出分布偏离 \(p\)，生成质量下降</label>
+  <label><input type="radio" name="q3" value="2"> target 拒绝所有 draft，系统崩溃无法继续生成</label>
+  <div class="feedback correct">✓ 正确！\(q\) 与 \(p\) 完全不交时 \(\text{TV}=1\)，\(c_1=0\)，第一个 draft 必被拒。但从残差 resample 出 1 个 token（服从 \(p\)），本轮仍产出 1 个 token = 朴素解码速度。Lossless 保证输出分布仍是 \(p\)，质量不变，只是没加速。这正说明 spec decoding 是"无损且不劣化"的。</div>
+  <div class="feedback incorrect">✗ Lossless guarantee 与 \(q\) 的质量无关——无论 \(q\) 多差，输出都精确等于 \(p\)。\(q\) 差只会降低接受率（变慢），不会破坏质量。最差退化为朴素速度，不会崩溃。</div>
+</div>
+
+<div class="quiz" data-answer="2">
+  <h4>Q4: 某位置 \(p_k(\tilde{x}_k) = 0.20\)，\(q_k(\tilde{x}_k) = 0.80\)。接受概率是多少？</h4>
+  <label><input type="radio" name="q4" value="1"> 1.0（target 认为概率非零，全接受）</label>
+  <label><input type="radio" name="q4" value="2"> 0.25（draft 高估 4 倍，按比值打折）</label>
+  <label><input type="radio" name="q4" value="3"> 0.20（等于 target 概率）</label>
+  <div class="feedback correct">✓ 正确！\(r = \min(1, p/q) = \min(1, 0.20/0.80) = \min(1, 0.25) = 0.25\)。Draft 给了 0.80 但 target 只认 0.20，draft 高估了 4 倍，接受概率被打折到 0.25。若被拒，"该 token"在残差中 \(\max(0, 0.20-0.80)=0\)，被完全排除。</div>
+  <div class="feedback incorrect">✗ \(p \neq 0\) 但 \(p < q\)，所以 \(r = p/q = 0.25 < 1\)，不是全接受。接受概率也不是 \(p\) 本身——\(r\) 是比值 \(\min(1, p/q)\)，不是 \(p\) 的绝对值。</div>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,15 @@
+{
+  "title": "pi 多模型工具 / Provider 兼容层",
+  "lessons": [
+    {
+      "title": "一套工具定义，五种模型 API",
+      "path": "lessons/0001-tool-provider-compat.html"
+    }
+  ],
+  "references": [
+    {
+      "title": "pi 工具 / Provider 兼容速查表",
+      "path": "reference/0001-tool-compat-cheatsheet.html"
+    }
+  ]
+}

@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第十一课：Expert Parallel 与 DeepEP</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script defer src="../assets/quiz.js"></script>
+</head>
+<body>
+<h1>Expert Parallel 与 DeepEP</h1>
+<p class="outcome">学完本课，你能从 global expert id 推导 weight owner，区分 Dispatcher 与 Runner，并追踪一个 token 经 dispatch、local grouped GEMM 和 combine 返回源 rank。</p>
+
+<h2>EP 首先是参数 ownership</h2>
+<p>对 routed experts，v0.5.15 的核心关系是：</p>
+<pre><code>num_local_routed = num_global_routed / moe_ep_size
+start = moe_ep_rank × num_local_routed
+end   = start + num_local_routed
+
+global expert e belongs to this rank iff start ≤ e &lt; end
+local expert id = e - start</code></pre>
+<p>例如 256 个 routed experts、<code>ep_size=8</code>，每 rank 拥有 32 个。weight loader 遇到非本 rank expert 会映射为 -1 并跳过；共享 experts 另有映射规则。<span class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/layers/moe/fused_moe_triton/layer.py#L190-L225">fused_moe_triton/layer.py:190-225</a> 与 <a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/layers/moe/fused_moe_triton/layer.py#L690-L710">fused_moe_triton/layer.py:690-710</a>。</span></p>
+
+<h2>Token 必须去参数所在 rank</h2>
+<pre><code>source rank hidden states
+  → TopK: token t selects global experts [e7, e91]
+  → dispatcher.dispatch
+      compute destination layout
+      all-to-all token copies to expert owners
+  → each rank runs local grouped GEMM
+  → dispatcher.combine
+      use dispatch handle to send expert outputs back
+      apply top-k weights / restore source token order
+  → source rank continues the layer</code></pre>
+<p><code>FusedMoE.forward_impl</code> 的稳定骨架是 <code>dispatch → run_moe_core → combine</code>。通信 backend 与 GEMM runner 被分开选择，所以 <code>--moe-a2a-backend</code> 与 <code>--moe-runner-backend</code> 解决不同问题。<span class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/layers/moe/fused_moe_triton/layer.py#L1220-L1260">fused_moe_triton/layer.py:1220-1260</a>。</span></p>
+
+<h2>Dispatcher 与 Runner 是两个独立选择</h2>
+
+<table>
+<thead><tr><th>层</th><th>CLI</th><th>负责什么</th><th>主要瓶颈</th></tr></thead>
+<tbody>
+<tr><td>TopK router</td><td>model/config</td><td>选择 global expert ids 与 weights</td><td>routing balance</td></tr>
+<tr><td>Dispatcher</td><td><code>--moe-a2a-backend</code></td><td>token dispatch/combine 与 layout</td><td>NVLink/RDMA、同步</td></tr>
+<tr><td>Runner</td><td><code>--moe-runner-backend</code></td><td>local experts 的 grouped GEMM</td><td>kernel、quantization、token shape</td></tr>
+</tbody>
+</table>
+
+<p>只替换 DeepEP 会改变通信，不自动改变 local GEMM；只替换 DeepGEMM/Triton runner 也不会消除 all-to-all。Profiler 必须分别记录 dispatch、local compute 与 combine，否则把 end-to-end MoE 时间归咎于一个 backend 没有可证伪性。SGLang 的 <code>FusedMoE.forward_impl</code> 正是用 <code>dispatcher.dispatch → run_moe_core → dispatcher.combine</code> 保持这条边界。<span class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/docs/advanced_features/expert_parallelism.md#supported-backends-and-selection-guidance">Expert Parallelism backend guide</a> 与 <a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/layers/moe/fused_moe_triton/layer.py#L1220-L1260">fused_moe_triton/layer.py:1220-1260</a>。</span></p>
+
+<h2>DeepEP 的 normal 与 low-latency</h2>
+<table>
+<thead><tr><th>模式</th><th>主要场景</th><th>Layout 特征</th></tr></thead>
+<tbody>
+<tr><td><code>normal</code></td><td>prefill / 大 token batch</td><td>先算 dispatch layout，追求吞吐</td></tr>
+<tr><td><code>low_latency</code></td><td>decode / 小 token batch</td><td>固定容量 masked layout，兼容 CUDA Graph</td></tr>
+<tr><td><code>auto</code></td><td>混合 serving</td><td>根据 batch 是否包含 extend 动态解析</td></tr>
+</tbody>
+</table>
+<p><code>DeepEPDispatcher._get_impl</code> 读取当前 batch 的 extend 标志：extend 选择 normal，decode 选择 low-latency。其 stage assertions 保证 dispatch 与 combine 顺序配对，dispatch handle 则让 combine 知道结果如何返回源 token。<span class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/layers/moe/token_dispatcher/deepep.py#L841-L970">deepep.py:841-970</a>。</span></p>
+
+<h2>DPA 与 EP 是正交 ownership</h2>
+<p>典型 <code>tp=8, dp=8, ep=8</code> 中，request 与 KV 属于一个 DPA rank，Attention 本地执行；MoE expert weights 分散在 8 个 EP ranks，local attention 输出经 DeepEP 发往选中 expert 的 owner，再 combine 回 request/token 的 source rank。DPA 减少 KV duplication，EP 减少 expert weight duplication，但代价是 MoE all-to-all。</p>
+<div class="invariant"><strong>不要从 EP 推导 KV ownership</strong>expert id 决定 MoE 参数在哪个 rank，request routing 决定 KV 在哪个 DPA rank。这是两套不同映射。</div>
+<p>v0.5.15 官方文档说明 DeepEP、Mooncake、NIXL 等多数 A2A backend 要求 <code>ep_size=tp_size</code>；hybrid <code>ep_size&lt;tp_size</code> 通常只能使用非 A2A path。<span class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/docs/advanced_features/expert_parallelism.md">Expert Parallelism guide</a>。</span></p>
+
+<h2>最小自检</h2>
+<div class="quiz" data-answer="4">
+<h3>源 rank 上的 token 选中了远端 rank 拥有的 expert。正确的数据路径是哪条？</h3>
+<label><input type="radio" name="q11" value="1">复制权重、本地计算、丢弃</label>
+<label><input type="radio" name="q11" value="2">移动 KV、远端注意力、返回</label>
+<label><input type="radio" name="q11" value="3">广播请求、全部计算、平均</label>
+<label><input type="radio" name="q11" value="4">派发 token、远端 GEMM、合并</label>
+<div class="feedback correct" aria-live="polite">正确。DeepEP dispatch 把 token 发到 expert owner，owner 执行 local grouped GEMM，combine 把结果送回 source token。</div>
+<div class="feedback incorrect" aria-live="polite">不对。EP 移动的是 routed token activation，不是 request KV 或整份 expert weight。路径是 dispatch、local GEMM、combine。</div>
+</div>
+<div class="quiz" data-answer="2">
+<h3>只更换 <code>--moe-runner-backend</code>，直接改变的是哪一段？</h3>
+<label><input type="radio" name="q11b" value="1">跨 rank dispatch 通信</label>
+<label><input type="radio" name="q11b" value="2">Local expert grouped GEMM</label>
+<label><input type="radio" name="q11b" value="3">Request KV prefix match</label>
+<label><input type="radio" name="q11b" value="4">Tokenizer IPC routing</label>
+<div class="feedback correct" aria-live="polite">正确。Runner 负责 local expert compute；A2A dispatch/combine 由 Dispatcher backend 决定。</div>
+<div class="feedback incorrect" aria-live="polite">不对。Runner 与 Dispatcher 是独立层；runner backend 直接改变 local expert GEMM。</div>
+</div>
+
+</body>
+</html>

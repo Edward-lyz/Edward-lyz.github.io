@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 01: Python CPU 性能分析与优化 — 从 33s 到 3.3s 的实战拆解</title>
+<style>
+:root { --text: #1a1a1a; --bg: #fefefe; --accent: #2563eb; --muted: #6b7280; --border: #e5e7eb; --code-bg: #f3f4f6; --highlight: #fef3c7; --success: #dcfce7; --danger: #fef2f2; }
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'Crimson Pro', 'Source Han Serif CN', Georgia, serif; color: var(--text); background: var(--bg); max-width: 780px; margin: 0 auto; padding: 2rem 1.5rem; line-height: 1.75; font-size: 17px; }
+h1 { font-size: 1.8rem; margin-bottom: 0.3rem; letter-spacing: -0.02em; }
+h2 { font-size: 1.35rem; margin-top: 2.8rem; margin-bottom: 0.8rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+h3 { font-size: 1.1rem; margin-top: 1.8rem; margin-bottom: 0.5rem; }
+p { margin-bottom: 1rem; }
+.subtitle { color: var(--muted); font-size: 0.95rem; margin-bottom: 2rem; }
+.formula-box { background: var(--code-bg); border-left: 3px solid var(--accent); padding: 1rem 1.2rem; margin: 1.2rem 0; font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.85rem; line-height: 1.8; overflow-x: auto; white-space: pre-wrap; }
+.key-insight { background: var(--highlight); border-radius: 4px; padding: 0.8rem 1rem; margin: 1rem 0; }
+.key-insight::before { content: "💡 "; }
+.danger-box { background: var(--danger); border-left: 3px solid #ef4444; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 4px; }
+.danger-box::before { content: "⚠️ "; }
+.success-box { background: var(--success); border-left: 3px solid #22c55e; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 4px; }
+.success-box::before { content: "✅ "; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 0.9rem; }
+th, td { border: 1px solid var(--border); padding: 0.5rem 0.7rem; text-align: left; }
+th { background: var(--code-bg); font-weight: 600; }
+code { font-family: 'JetBrains Mono', monospace; font-size: 0.83em; background: var(--code-bg); padding: 0.15em 0.4em; border-radius: 3px; }
+pre { background: var(--code-bg); padding: 1rem 1.2rem; margin: 1rem 0; border-radius: 6px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.82rem; line-height: 1.6; }
+.phase { margin: 1.5rem 0; padding: 1rem 1.2rem; border: 1px solid var(--border); border-radius: 8px; }
+.phase-header { font-weight: 700; color: var(--accent); margin-bottom: 0.5rem; }
+.metric { display: inline-block; background: var(--code-bg); padding: 0.2rem 0.6rem; border-radius: 4px; margin: 0.2rem 0.3rem; font-family: monospace; font-size: 0.85rem; }
+.timeline { position: relative; padding-left: 2rem; margin: 1.5rem 0; }
+.timeline::before { content: ''; position: absolute; left: 0.6rem; top: 0; bottom: 0; width: 2px; background: var(--accent); }
+.timeline-item { position: relative; margin-bottom: 1.2rem; }
+.timeline-item::before { content: ''; position: absolute; left: -1.65rem; top: 0.45rem; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); }
+.quiz { background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px; padding: 1rem; margin: 1.5rem 0; }
+.quiz summary { cursor: pointer; font-weight: 600; }
+.quiz p { margin-top: 0.5rem; }
+.nav { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--border); font-size: 0.9rem; color: var(--muted); }
+.nav a { color: var(--accent); text-decoration: none; }
+.toc { background: var(--code-bg); padding: 1rem 1.5rem; border-radius: 6px; margin: 1.5rem 0; }
+.toc ol { padding-left: 1.2rem; }
+.toc li { margin: 0.3rem 0; }
+.toc a { color: var(--accent); text-decoration: none; }
+</style>
+</head>
+<body>
+
+<h1>Lesson 01: Python CPU 性能分析与优化</h1>
+<p class="subtitle">从 33s 到 3.3s — aiak_ds_tool simulator_v2 的 10x 加速实战拆解</p>
+
+<nav class="toc">
+<strong>目录</strong>
+<ol>
+<li><a href="#context">问题背景</a></li>
+<li><a href="#tools">工具选择：cProfile vs pyinstrument</a></li>
+<li><a href="#baseline">基线测量</a></li>
+<li><a href="#diagnosis">瓶颈诊断</a></li>
+<li><a href="#opt1">优化 Pass 1：DB 查询缓存</a></li>
+<li><a href="#opt2">优化 Pass 2：算子结果缓存</a></li>
+<li><a href="#opt3">优化 Pass 3：查询键缓存</a></li>
+<li><a href="#opt4">优化 Pass 4：运行时类型检查</a></li>
+<li><a href="#validation">正确性验证</a></li>
+<li><a href="#methodology">方法论总结</a></li>
+</ol>
+</nav>
+
+<h2 id="context">§1 问题背景</h2>
+
+<p>simulator_v2 是 aiak_ds_tool 中的推理性能模拟器，给定模型配置和运行参数，通过查询预采集的算子性能数据库，输出逐层/逐算子的耗时预估。</p>
+
+<p>核心调用链：</p>
+<pre>
+SimulatorV2App.export_result()
+  └─ SimulatorEngine.simulate()          # 对每个 case 逐层模拟
+       └─ OperatorRegistry.get_time()    # 对每个算子查询耗时
+            └─ DBEngine.query()          # 打开 sqlite3 DB → 执行查询 → 返回行
+</pre>
+
+<p>问题：16-case prefill 场景下 wall time = 32.9s。对一个纯 CPU 数据查询+计算工具而言，显然不可接受。</p>
+
+<h2 id="tools">§2 工具选择：cProfile vs pyinstrument</h2>
+
+<table>
+<tr><th>维度</th><th>cProfile</th><th>pyinstrument</th></tr>
+<tr><td>采样方式</td><td>确定性（每次调用 hook）</td><td>统计采样（~1ms 间隔）</td></tr>
+<tr><td>开销</td><td>5-30%（侵入式）</td><td>≈2%（低干扰）</td></tr>
+<tr><td>输出</td><td>flat 表：ncalls / tottime / cumtime</td><td>调用树 + 按时间折叠</td></tr>
+<tr><td>强项</td><td>精确调用次数，量化单次开销</td><td>快速定位热路径层级关系</td></tr>
+<tr><td>弱项</td><td>输出扁平，大量 import 噪声</td><td>丢失低频调用细节</td></tr>
+<tr><td>可视化</td><td>snakeviz / speedscope</td><td>自带 HTML / speedscope JSON</td></tr>
+</table>
+
+<div class="key-insight">
+实战中两者互补：先用 pyinstrument 看树状结构找到热路径，再用 cProfile 量化该路径上的调用次数和单次开销。
+</div>
+
+<h3>命令示例</h3>
+<pre>
+# cProfile: 输出 pstats 二进制文件
+python3 -m cProfile -o /tmp/simv2.pstats -m aiak_infer_tools simulator_v2 \
+  --model-config ... --run-config ... --export-output /tmp/out.csv
+
+# pyinstrument: 输出 HTML 调用树
+pyinstrument -r html -o /tmp/profile.html \
+  -m aiak_infer_tools simulator_v2 ...
+
+# pyinstrument: 输出 speedscope JSON
+pyinstrument -r speedscope -o /tmp/profile.json \
+  -m aiak_infer_tools simulator_v2 ...
+</pre>
+
+<h2 id="baseline">§3 基线测量</h2>
+
+<p>测量环境：macOS / Apple Silicon / Python 3.11 / sqlite3 本地文件</p>
+
+<table>
+<tr><th>场景</th><th>Wall Time</th><th>cProfile 下</th><th>DB query 调用次数</th></tr>
+<tr><td>decode 1 case</td><td>—</td><td>3.52s</td><td>2,516</td></tr>
+<tr><td>prefill 16 cases</td><td>32.9s</td><td>35.8s</td><td>45,424</td></tr>
+</table>
+
+<p>关键发现：prefill 16 cases 生成 42,960 个算子请求，但 unique DB query key 仅 556 个。</p>
+
+<div class="formula-box">
+duplicate_factor = total_queries / unique_keys = 45424 / 557 ≈ 77x
+</div>
+
+<div class="key-insight">
+77 倍重复查询。大部分时间花在重复打开相同的 sqlite3 文件、执行相同的 SQL、转换相同的行。这是典型的 memoization 机会。
+</div>
+
+<h2 id="diagnosis">§4 瓶颈诊断</h2>
+
+<p>从 pyinstrument baseline 调用树提取的热路径拆解：</p>
+
+<table>
+<tr><th>调用路径</th><th>耗时</th><th>占 simulate 比例</th></tr>
+<tr><td><code>DBEngine.query</code> 总计</td><td>~22s</td><td>81%</td></tr>
+<tr><td>&nbsp;&nbsp;└ <code>Connection.execute</code>（获取表名）</td><td>9.0s</td><td>33%</td></tr>
+<tr><td>&nbsp;&nbsp;└ <code>sqlite3.connect</code>（打开连接）</td><td>1.7s</td><td>6%</td></tr>
+<tr><td>&nbsp;&nbsp;└ <code>Connection.close</code></td><td>1.3s</td><td>5%</td></tr>
+<tr><td>&nbsp;&nbsp;└ <code>Cursor.execute</code>（实际查询）</td><td>2.2s</td><td>8%</td></tr>
+<tr><td>&nbsp;&nbsp;└ <code>_resolve_backend_name</code>（listdir）</td><td>1.7s</td><td>6%</td></tr>
+<tr><td>&nbsp;&nbsp;└ <code>_convert_row</code> + <code>listcomp</code></td><td>2.0s</td><td>7%</td></tr>
+<tr><td><code>dataclasses.asdict</code>（payload 序列化）</td><td>4.7s</td><td>17%</td></tr>
+<tr><td><code>asdict</code> on query list</td><td>2.0s</td><td>7%</td></tr>
+</table>
+
+<p>诊断结论：</p>
+<ol>
+<li><strong>DB 层</strong>：每次 <code>query()</code> 都重新 connect → 查 table name → 执行 SQL → close。45,424 次调用，每次 ~0.5ms。</li>
+<li><strong>序列化层</strong>：<code>dataclasses.asdict</code> 使用 <code>copy.deepcopy</code>，嵌套越深越慢。</li>
+<li><strong>通信算子插值</strong>：<code>interpolation_coordinate_rows</code> 对同一组坐标反复查 DB 获取邻近点。</li>
+</ol>
+
+<h2 id="opt1">§5 优化 Pass 1：DB 查询缓存</h2>
+
+<div class="phase">
+<div class="phase-header">策略</div>
+<p>在 <code>DBEngine</code> 类上引入两层 class-level dict 缓存：</p>
+<ol>
+<li><code>_QUERY_DB_PATH_CACHE</code>：缓存 (data_dir, device, op, backend, version) → db_path 映射</li>
+<li><code>_QUERY_CACHE</code>：缓存 (db_path, mtime_ns, size, filters) → 查询结果行（以 tuple of tuples 存储，避免 mutable aliasing）</li>
+</ol>
+</div>
+
+<p>核心实现要点：</p>
+<pre>
+# 缓存 key 包含 mtime_ns + size 作为 invalidation 信号
+db_stat = os.stat(db_path)
+query_cache_key = (
+    db_path,
+    db_stat.st_mtime_ns,
+    db_stat.st_size,
+    tuple(sorted((filters or {}).items())),
+)
+cached_rows = cls._QUERY_CACHE.get(query_cache_key)
+if cached_rows is not None:
+    return [dict(row_items) for row_items in cached_rows]
+
+# cache miss → 正常查询 → 存入 cache
+rows = [cls._convert_row(dict(row)) for row in cursor.fetchall()]
+cls._QUERY_CACHE[query_cache_key] = tuple(tuple(row.items()) for row in rows)
+</pre>
+
+<div class="key-insight">
+cache value 用 <code>tuple(tuple(row.items()))</code> 而不是直接存 list of dict — 防止调用方修改 dict 后污染 cache。返回时用 <code>[dict(row_items) for row_items in cached_rows]</code> 重建新 dict。
+</div>
+
+<p>Invalidation：在 <code>write()</code> / <code>delete()</code> / <code>batch_insert()</code> 之后调用 <code>cls.clear_query_cache()</code>。</p>
+
+<p><strong>效果：</strong></p>
+<table>
+<tr><th>指标</th><th>Before</th><th>After Pass 1</th><th>提升</th></tr>
+<tr><td>prefill 16 cases wall</td><td>32.9s</td><td>5.5s</td><td>6x</td></tr>
+<tr><td>simulate-only wall</td><td>29.6s</td><td>4.9s</td><td>6x</td></tr>
+<tr><td>cache hit rate</td><td>—</td><td>44,867/45,424 = 98.8%</td><td>—</td></tr>
+</table>
+
+<h2 id="opt2">§6 优化 Pass 2：算子结果缓存</h2>
+
+<div class="phase">
+<div class="phase-header">策略</div>
+<p>在 <code>OperatorRegistry.get_time()</code> 层面，对相同 (runtime context, op_time_request) 缓存最终的 <code>OpTimeResult</code>。</p>
+</div>
+
+<p>观察：即使 DB 缓存命中，每次 <code>get_time</code> 仍需执行 <code>build_time_request</code> → 构造 cache key → 查 DB → 后处理。对相同算子+相同 shape，结果必然相同。</p>
+
+<pre>
+# OperatorRegistry.get_time() 内部
+time_cache_key = self.time_cache_key(runtime, op_time_request)
+op_time_result = self.operator_time_results.get(time_cache_key)
+if op_time_result is None:
+    queried_request, op_time_result = operator_class.get_time(...)
+    self.operator_time_results[time_cache_key] = op_time_result
+return op_time_request, op_time_result
+</pre>
+
+<p>cache key 设计：</p>
+<pre>
+@staticmethod
+def time_cache_key(runtime, op_time_request):
+    backend, backend_version = resolve_backend(runtime, op_time_request)
+    return (
+        runtime_string_option(runtime, "data_dir"),
+        runtime_string_option(runtime, "device_name"),
+        backend,
+        backend_version,
+        op_time_request.concrete_op_name,
+        tuple(sorted(op_time_request.get_time_kwargs.items())),
+    )
+</pre>
+
+<p><strong>效果：</strong></p>
+<table>
+<tr><th>指标</th><th>After Pass 1</th><th>After Pass 2</th><th>提升</th></tr>
+<tr><td>prefill 16 cases wall</td><td>5.5s</td><td>3.4s</td><td>1.6x</td></tr>
+<tr><td>OperatorRegistry.get_time</td><td>3.8s</td><td>1.5s</td><td>2.5x</td></tr>
+</table>
+
+<h2 id="opt3">§7 优化 Pass 3：查询键缓存</h2>
+
+<div class="phase">
+<div class="phase-header">策略</div>
+<p>缓存 <code>build_time_request</code> 中的 <code>query_key_for_op</code> 结果。该函数通过 <code>OperatorManager.create_operator</code> 查找算子注册表，涉及字符串匹配和对象创建。</p>
+</div>
+
+<p><strong>效果：</strong> 3.4s → 3.3s（微小收益，但消除了 profile 中 <code>build_time_request</code> 下的 <code>create_operator</code> 热点）。</p>
+
+<h2 id="opt4">§8 优化 Pass 4：运行时类型检查</h2>
+
+<div class="phase">
+<div class="phase-header">策略</div>
+<p><code>resolve_backend</code> 中使用 <code>isinstance(x, Mapping)</code> 做 dict-like 类型检查。Python 的 <code>typing.Mapping</code> 走 <code>__instancecheck__</code> → <code>__subclasscheck__</code> 链，每次调用开销远高于直接 <code>isinstance(x, dict)</code>。</p>
+<p>改为 <code>from collections.abc import Mapping as MappingABC</code> 后，ABC 注册的 virtual subclass 检查路径更短。</p>
+</div>
+
+<pre>
+# Before: typing.Mapping（每次走 _GenericAlias.__instancecheck__）
+from typing import Mapping
+isinstance(x, Mapping)
+
+# After: collections.abc.Mapping（直接 ABC 注册检查）
+from collections.abc import Mapping as MappingABC
+isinstance(x, MappingABC)
+</pre>
+
+<div class="key-insight">
+在热路径上避免 <code>typing</code> 模块的运行时类型检查。<code>typing.Mapping</code> 的 <code>isinstance</code> 比 <code>collections.abc.Mapping</code> 慢约 3-5x，因为前者需要经过 <code>_SpecialGenericAlias.__instancecheck__</code> → <code>__subclasscheck__</code> 的间接路径。
+</div>
+
+<h2 id="validation">§9 正确性验证</h2>
+
+<p>每次优化后执行三道验证：</p>
+
+<ol>
+<li><strong>CSV bit-exact 比较</strong>：优化后输出与 baseline 完全一致
+<pre>
+diff &lt;(sort /tmp/baseline.csv) &lt;(sort /tmp/optimized.csv)
+# 或
+cmp /tmp/baseline.csv /tmp/optimized.csv; echo "exit=$?"
+# → exit=0
+</pre>
+</li>
+<li><strong>单元测试</strong>：231 passed, 1 skipped</li>
+<li><strong>集成测试/流水线</strong>：5 passed, 6 skipped</li>
+</ol>
+
+<div class="danger-box">
+缓存优化的最大风险是 stale data。必须确保 invalidation 路径完备：所有写操作（write / delete / batch_insert）后必须 <code>clear_query_cache()</code>。本案例中 class-level cache 在进程生命周期内有效；因为 simulator 是单次运行的 CLI 工具，不存在跨请求 stale 问题。
+</div>
+
+<h2 id="methodology">§10 方法论总结</h2>
+
+<h3>10.1 性能分析四步法</h3>
+
+<div class="timeline">
+<div class="timeline-item">
+<strong>Step 1: 建立 baseline</strong><br>
+用 wall time 测基准值。如果 cProfile 开销大（>10%），优先用 pyinstrument。记录精确的调用次数。
+</div>
+<div class="timeline-item">
+<strong>Step 2: 定位热路径</strong><br>
+pyinstrument 调用树找到占比最大的叶子节点。关注 cumtime 占总时间 >30% 的路径。
+</div>
+<div class="timeline-item">
+<strong>Step 3: 量化重复度</strong><br>
+用 cProfile 的 ncalls 或手动插桩统计：unique 输入有多少？duplicate factor 多大？这决定了 cache 的收益上界。
+</div>
+<div class="timeline-item">
+<strong>Step 4: 逐层优化 + 验证</strong><br>
+从最底层（IO/外部调用）开始缓存，逐层向上。每一层优化后：(a) 验证正确性，(b) 重新 profile 确认热点转移。
+</div>
+</div>
+
+<h3>10.2 Python 常见 CPU 陷阱</h3>
+
+<table>
+<tr><th>陷阱</th><th>症状</th><th>修复</th></tr>
+<tr><td>重复 sqlite3.connect()</td><td>connect/close 在 profile 中占 10%+</td><td>连接池或查询结果缓存</td></tr>
+<tr><td>dataclasses.asdict</td><td>_asdict_inner + copy.deepcopy 调用爆炸</td><td>避免在热路径序列化；用 tuple/namedtuple 代替</td></tr>
+<tr><td>typing.isinstance</td><td>_SpecialGenericAlias.__instancecheck__ 高频</td><td>用 collections.abc 对应类型</td></tr>
+<tr><td>dataclasses.replace</td><td>每次创建新对象 + deepcopy fields</td><td>如果 field 未变，直接重用原对象</td></tr>
+<tr><td>os.listdir 在循环中</td><td>系统调用反复扫描目录</td><td>结果缓存或预加载目录清单</td></tr>
+</table>
+
+<h3>10.3 Cache 设计 checklist</h3>
+
+<ol>
+<li><strong>Key 完备性</strong>：所有影响结果的输入都必须在 key 中。遗漏一个维度 = 返回错误结果。</li>
+<li><strong>Value 隔离</strong>：cache value 必须不可变或在返回时复制。避免调用方修改后污染。</li>
+<li><strong>Invalidation</strong>：所有写操作路径必须清缓存。宁可多清不可少清。</li>
+<li><strong>容量控制</strong>：无限增长的 cache 是内存泄漏。设 max entries 或用 LRU。</li>
+<li><strong>作用域</strong>：class-level（进程级）vs instance-level vs 请求级。选择匹配生命周期的作用域。</li>
+</ol>
+
+<h3>10.4 优化效果全景</h3>
+
+<table>
+<tr><th>阶段</th><th>Wall Time</th><th>相对 Baseline</th><th>主要改动</th></tr>
+<tr><td>Baseline</td><td>32.9s</td><td>1.0x</td><td>—</td></tr>
+<tr><td>Pass 1: DB cache</td><td>5.5s</td><td>6.0x</td><td>query rows + db_path 缓存</td></tr>
+<tr><td>Pass 2: OpTime cache</td><td>3.4s</td><td>9.7x</td><td>算子最终结果缓存</td></tr>
+<tr><td>Pass 3: query key cache</td><td>3.3s</td><td>10.0x</td><td>operator lookup 缓存</td></tr>
+<tr><td>Pass 4: ABC isinstance</td><td>3.3s</td><td>10.0x</td><td>typing → collections.abc</td></tr>
+</table>
+
+<div class="success-box">
+最终效果：10x 加速，输出 bit-exact。全部测试通过。无功能变更，纯性能优化。
+</div>
+
+<h3>10.5 何时停止优化</h3>
+
+<p>Pass 3/4 后的 profile 显示：</p>
+<ul>
+<li><code>export_result</code>: 2.6s（其中 <code>simulate</code>: 2.4s）</li>
+<li>import/registration: 1.5s（模块加载，不可优化）</li>
+<li><code>OperatorRegistry.get_time</code>: 1.2s（主要是 <code>build_time_request</code> 中的对象构造）</li>
+</ul>
+
+<p>剩余热点已经分散在多个地方，没有单一瓶颈 >30%。继续优化的 ROI 显著下降。这是合理的停止点。</p>
+
+<div class="key-insight">
+停止优化的信号：(1) 剩余热点不集中；(2) 剩余开销中固定成本（import/init）占比升高；(3) 进一步优化需要改变接口或数据结构设计。
+</div>
+
+<h2>Quiz: 检验理解</h2>
+
+<details class="quiz">
+<summary>Q1: 为什么 DB 缓存用 mtime_ns + size 作为 invalidation key？</summary>
+<p>因为 simulator 运行期间理论上不会有外部进程修改 DB 文件，但如果文件被修改（比如重新采集数据后再次运行），mtime_ns 和 size 的变化能确保不会读到旧缓存。这比简单的 path-based key 多一层安全保障，同时避免了 file hash 的计算开销。</p>
+</details>
+
+<details class="quiz">
+<summary>Q2: Pass 2 的 time_cache_key 为什么不直接用 op_time_request 对象作为 key？</summary>
+<p>dataclass 对象的 hash 默认基于 id()（如果未设 frozen=True），即使内容相同也不会命中。即使设了 frozen，嵌套 dict field 不可 hash。所以必须手动提取影响结果的字段构造 tuple key。</p>
+</details>
+
+<details class="quiz">
+<summary>Q3: 如果 simulator 改为 long-running server 模式，cache 设计需要怎么调整？</summary>
+<p>需要引入 TTL 或 request-scoped cache。class-level 无限期缓存在 server 中会导致 stale data（DB 文件更新后仍返回旧结果）。可选方案：(a) 每次请求开始时 clear_query_cache；(b) 用 mtime check 做 lazy invalidation（当前实现已包含）；(c) 加 max_entries + LRU 防止内存无限增长。</p>
+</details>
+
+<div class="nav">
+<strong>参考材料：</strong>
+<a href="../reference/profiling-commands.html">Profiling 命令速查</a> |
+原始数据：<code>PRIVATE/archive/aiak_ds_tool_simulator_v2_profile_20260615/</code><br>
+<br>
+💬 有任何不清楚的地方，直接问 agent。这里是你的学习空间。
+</div>
+
+</body>
+</html>

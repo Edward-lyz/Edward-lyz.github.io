@@ -78,7 +78,7 @@ jobs:
 
           host = urlparse(page_url).netloc
           key_location = f'https://{host}/{key}.txt'
-          sitemap_url = page_url + 'sitemap.xml'
+          sitemap_urls = [page_url + 'sitemap.xml', page_url + 'teach-sitemap.xml']
 
           def fetch_text(url: str, tries: int = 5, sleep_s: int = 3) -> str:
             last_exc = None
@@ -94,8 +94,10 @@ jobs:
           if fetch_text(key_location).strip() != key:
             raise RuntimeError('IndexNow key file not ready')
 
-          sitemap = fetch_text(sitemap_url)
-          urls = re.findall(r'<loc>([^<]+)</loc>', sitemap)
+          urls = []
+          for sitemap_url in sitemap_urls:
+            sitemap = fetch_text(sitemap_url)
+            urls.extend(re.findall(r'<loc>([^<]+)</loc>', sitemap))
 
           seen = set()
           url_list = []

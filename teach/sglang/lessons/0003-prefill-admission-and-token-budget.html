@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第三课：Prefill admission 与 token budget</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script defer src="../assets/quiz.js"></script>
+</head>
+<body>
+<h1>Prefill admission 与 token budget</h1>
+<p class="outcome">学完本课，你能区分 waiting queue 排序与 admission，并用 <code>PrefillAdder</code> 的四类约束手算一个 request 能否进入本轮 prefill。</p>
+
+<h2>Admission 控制的是未来峰值</h2>
+<p>一个新 request 不只消耗当前要 prefill 的 token。Scheduler 还要考虑已经运行 requests 的未来 decode、该 request 的 <code>max_new_tokens</code>、页对齐开销，以及可从未锁定 Radix Cache 回收的空间。标准 MHA 路径可压缩成：</p>
+<pre><code>available_and_evictable
+  = allocator.available_size() + tree_cache.evictable_size()
+
+rem_total_tokens
+  = available_and_evictable - running_future_reservation
+
+new_request_total_reservation
+  = ceil_page(extend_tokens) + max_new_tokens + page_size
+
+new_request_current_reservation
+  = ceil_page(extend_tokens) + page_size</code></pre>
+<p><code>rem_total_tokens</code> 防止当前 prefill 能跑、后续 decode 却立即爆仓；<code>cur_rem_tokens</code> 防止本轮 allocation 本身超配。Hybrid SWA、Mamba 与 DLLM 有额外预算，本课先固定标准 MHA。<span class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/managers/schedule_policy.py#L433-L690">schedule_policy.py:433-690</a>。</span></p>
+
+<h2>四道门必须同时通过</h2>
+<table>
+<thead><tr><th>约束</th><th>它保护什么</th><th>典型字段</th></tr></thead>
+<tbody>
+<tr><td>KV 总预算</td><td>running 与新请求的未来 lifetime</td><td><code>rem_total_tokens</code></td></tr>
+<tr><td>本轮输入预算</td><td>单次 forward 的 prefill 工作量</td><td><code>rem_input_tokens</code></td></tr>
+<tr><td>Chunk 预算</td><td>长 prompt 对 decode latency 的干扰</td><td><code>rem_chunk_tokens</code></td></tr>
+<tr><td>Request slot</td><td><code>ReqToTokenPool</code> row 与 batch 上限</td><td><code>max_running_requests</code></td></tr>
+</tbody>
+</table>
+<p><code>get_new_batch_prefill</code> 先按 schedule policy 排 waiting queue，再让 <code>PrefillAdder</code> 逐个尝试。遇到 <code>NO_TOKEN</code> 通常停止继续添加；遇到 request count、LoRA 或其他边界，也可能返回 <code>OTHER</code>。所以 waiting queue 非空不意味着本轮一定有 prefill。<span class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/managers/scheduler.py#L2733-L2955">scheduler.py:2733-2955</a>。</span></p>
+
+<h2>Policy 排顺序，PrefillAdder 决定能否运行</h2>
+
+<table>
+<thead><tr><th>Policy</th><th>排序信号</th><th>主要收益</th><th>主要风险</th></tr></thead>
+<tbody>
+<tr><td><code>fcfs</code></td><td>到达顺序</td><td>简单、公平</td><td>忽略 cache locality</td></tr>
+<tr><td><code>lpm</code></td><td>最长 cached prefix</td><td>减少 extend compute</td><td>匹配与排序有 CPU 成本</td></tr>
+<tr><td><code>dfs-weight</code></td><td>Radix subtree weight</td><td>批内共享与 locality</td><td>行为依赖 tree shape</td></tr>
+<tr><td><code>lof/random/routing-key</code></td><td>输出长度、随机或 routing frequency</td><td>面向特定 workload</td><td>不能自动保证 KV 可容纳</td></tr>
+</tbody>
+</table>
+
+<p><code>SchedulePolicy.calc_priority</code> 只改变 waiting queue 的候选顺序；每个候选仍要经过 <code>PrefillAdder</code>。v0.5.15 还有一个容易漏读的边界：配置 <code>lpm</code> 但 waiting queue 超过 128 时，active policy 临时退回 FCFS，避免大队列上的 prefix matching 与排序成本。看到 LPM ordering 消失或 cache locality 改变时，应先检查 active policy，而不是断言 Radix Cache 失效。<span class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/managers/schedule_policy.py#L138-L250">schedule_policy.py:138-250</a>。</span></p>
+
+<div class="invariant"><strong>Locality 不能绕过 capacity</strong>LPM 排在第一的 request 若无法通过 lifetime、current、chunk 或 row budget，仍然不能进入本轮 batch。</div>
+
+<h2>手算一个标准路径</h2>
+<p>设 <code>page_size=16</code>，allocator 有 2,000 token slots，Radix Cache 有 400 个未锁定可驱逐 slots，running requests 的未来 reservation 为 1,500。候选 request cache hit 后还需 extend 320 tokens，<code>max_new_tokens=128</code>。</p>
+<pre><code>rem_total = 2000 + 400 - 1500 = 900
+reserve   = ceil_page(320) + 128 + 16
+          = 320 + 128 + 16 = 464
+remaining = 900 - 464 = 436</code></pre>
+<p>它通过总预算，但还要检查本轮的 <code>max_prefill_tokens</code>、chunk budget 和 request row。如果 extend 为 321，页对齐会把它变成 336，这种看似小的差异在大 batch 下会累计。</p>
+
+<div class="invariant"><strong>不要把 evictable 当成 free</strong><code>evictable_size</code> 只是 Scheduler 可以按需回收的承诺。真正分配前，allocator 路径仍会调用 tree eviction；锁定节点不在这笔预算中。</div>
+
+<h2>Pool capacity 与动态 reservation 是两层控制</h2>
+
+<p><code>mem_fraction_static</code> 参与启动期的 GPU memory 划分，决定 model weights 与 KV pool 可占的静态比例；<code>new_token_ratio</code> 不扩缩这个 pool，而是在 admission 时估计 running requests 未来还会生成多少 tokens。成功 decode 会逐步衰减 ratio，提高利用率；发生 retraction 后，tracker 根据当前 requests 的 decoded/max-new 状态重新估计，使后续 admission 更保守或更符合当前 workload。</p>
+
+<pre><code>startup capacity:
+GPU memory → weights + KV pool + activations + graph buffers
+
+runtime promise:
+KV pool slots → free + evictable - estimated future tokens</code></pre>
+
+<p>所以调大 <code>mem_fraction_static</code> 与调低调度保守度不是同一操作：前者改变池的物理上限并挤压 activation/graph headroom，后者改变池内 overcommit 风险。<span class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/server_args.py#L3470-L3495">server_args.py:3470-3495</a> 与 <a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/managers/scheduler_components/new_token_ratio_tracker.py#L12-L50">new_token_ratio_tracker.py:12-50</a>。</span></p>
+
+<h2>读日志时的因果顺序</h2>
+<ol>
+<li>先看 waiting queue 是否有可运行 request。</li>
+<li>再看 request row 与 batch count。</li>
+<li>再看 <code>rem_input_tokens</code> 和 chunk budget。</li>
+<li>最后区分 free、evictable、protected 与 running reservation。</li>
+</ol>
+<p>只看 <code>nvidia-smi</code> 无法回答 admission 问题，因为 KV pool 在启动时已预分配，调度关心的是池内 slot ownership。</p>
+
+<h2>最小自检</h2>
+<div class="quiz" data-answer="2">
+<h3><code>page_size=16</code>，extend 为 321，<code>max_new_tokens=128</code>。标准路径的 lifetime reservation 是多少？</h3>
+<label><input type="radio" name="q3" value="1">四百六十五 slots</label>
+<label><input type="radio" name="q3" value="2">四百八十 slots</label>
+<label><input type="radio" name="q3" value="3">四百九十 slots</label>
+<label><input type="radio" name="q3" value="4">五百一十二 slots</label>
+<div class="feedback correct" aria-live="polite">正确。<code>ceil_page(321)=336</code>，所以 <code>336 + 128 + 16 = 480</code>。</div>
+<div class="feedback incorrect" aria-live="polite">不对。先按 16 对齐到 336，再加 128 个未来输出 slots 和一个 16-token page overhead。</div>
+</div>
+<div class="quiz" data-answer="3">
+<h3>配置 <code>lpm</code>，但 waiting queue 超过 128。v0.5.15 当前 pass 使用什么 active policy？</h3>
+<label><input type="radio" name="q3b" value="1"><code>dfs-weight</code></label>
+<label><input type="radio" name="q3b" value="2"><code>routing-key</code></label>
+<label><input type="radio" name="q3b" value="3"><code>fcfs</code></label>
+<label><input type="radio" name="q3b" value="4"><code>random</code></label>
+<div class="feedback correct" aria-live="polite">正确。大于 128 时临时使用 FCFS，避免大队列 prefix matching 与 sorting 开销。</div>
+<div class="feedback incorrect" aria-live="polite">不对。配置仍是 LPM，但这个 pass 的 active policy 临时回退为 FCFS。</div>
+</div>
+
+</body>
+</html>

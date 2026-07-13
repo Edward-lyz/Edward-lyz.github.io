@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第十五课：从 v0.5.15 安全追踪 main</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script defer src="../assets/quiz.js"></script>
+</head>
+<body>
+<h1>从 v0.5.15 安全追踪 main</h1>
+<p class="outcome">学完本课，你能审计二手文章与分叉代码，用 merge base、双侧 commit 集合和双侧 diff 判断哪些 runtime 结论仍适用。</p>
+
+<h2>冻结快照的三个点</h2>
+<table>
+<thead><tr><th>节点</th><th>本课程快照</th><th>日期</th></tr></thead>
+<tbody>
+<tr><td><code>v0.5.15^{commit}</code></td><td><code>f63458b5beac</code></td><td>commit 2026-07-09，release 2026-07-10</td></tr>
+<tr><td><code>origin/main</code></td><td><code>2225817424e0</code></td><td>本地快照 2026-07-13</td></tr>
+<tr><td><code>merge-base</code></td><td><code>9a6f8e599204</code></td><td>2026-07-06</td></tr>
+</tbody>
+</table>
+<p><code>v0.5.15</code> 是 annotated tag，<code>git rev-parse v0.5.15</code> 得到 tag object <code>d80c135a...</code>；要拿代码 commit 必须 peel 为 <code>v0.5.15^{commit}</code>。Release 页面是本课程版本依据：<a href="https://github.com/sgl-project/sglang/releases/tag/v0.5.15">SGLang v0.5.15</a>。</p>
+
+<h2>Tag 不是 main 的线性祖先</h2>
+<pre><code>base 9a6f8e5
+  ├─ release branch → 18 unique commits → v0.5.15 f63458b
+  └─ main branch    → 219 unique commits → main 2225817</code></pre>
+<p>因此 <code>git log v0.5.15..origin/main</code> 只展示 main 可达而 tag 不达的 commits，却不能说明 tag 可以按这条序列直接升级；它也不会告诉你 release-only cherry-picks。课程快照的左右计数来自：</p>
+<pre><code>git rev-list --left-right --count v0.5.15...origin/main
+# 18    219</code></pre>
+
+<h2>正确的三点审计</h2>
+<pre><code>BASE=$(git merge-base v0.5.15 origin/main)
+
+# 双侧 commit 集合
+ git log --left-right --cherry-pick --oneline    v0.5.15...origin/main
+
+# release 从共同祖先改了什么
+ git diff "$BASE"..v0.5.15 -- python/sglang/srt
+
+# main 从共同祖先改了什么
+ git diff "$BASE"..origin/main -- python/sglang/srt
+
+# 只看本课程 hot areas
+ git diff "$BASE"..origin/main --    python/sglang/srt/managers/scheduler.py    python/sglang/srt/managers/schedule_policy.py    python/sglang/srt/mem_cache    python/sglang/srt/layers/dp_attention.py    python/sglang/srt/layers/moe</code></pre>
+<p><code>git log A...B</code> 表示 commit 的 symmetric difference；<code>git diff A...B</code> 在 Git 中近似 merge-base 到 B 的 tree diff。两者的三点语义不同，审计时显式保存 <code>BASE</code> 最不容易误读。</p>
+
+<h2>读优秀二手文章时也要做版本审计</h2>
+
+<p>用户提供的 SGLang 串讲文章给出了很好的 end-to-end 叙事、overlap 时间轴和 Scheduler/KV 连接，但其代码锚点接近 <code>v0.5.5</code>，出现 <code>being_chunked_req</code>、旧 pool API 等历史形态。KV Cache 工程文章给出了清晰的容量公式、优化 taxonomy、backend 读写视角与 HiCache overlap，但同时混合了 vLLM、内部 AttentionStore 和持续演进的 SGLang 实现。</p>
+
+<pre><code>article claim
+→ classify as invariant / API detail / benchmark result
+→ locate frozen-tag source or primary paper
+→ keep invariant
+→ rewrite API detail against v0.5.15
+→ keep benchmark only with its hardware/workload boundary</code></pre>
+
+<p>因此本轮深化复用了文章的解释结构，没有复制其中旧代码作为事实。典型修正包括：v0.5.15 的类名是 <code>HiRadixCache</code>；DPA 的 <code>dp_size</code> 是 TP world 内 attention ownership 重解释；chunked request 与 allocator API 以固定 tag 为准。</p>
+
+<h2>先按不变量审查，不要逐行重读</h2>
+<ol>
+<li>Scheduler：event loop 阶段与 prefill-first 选择是否改变。</li>
+<li>Budget：free、evictable、running reservation 的公式是否改变。</li>
+<li>KV：request row、physical slot 与 canonical Radix ownership 是否改变。</li>
+<li>DPA：rank algebra、token gather、IDLE collective contract 是否改变。</li>
+<li>EP：expert mapping、dispatch/combine 与 mode resolution 是否改变。</li>
+<li>HiCache/PD：destination ownership 与 completion frontier 是否改变。</li>
+</ol>
+<p>截至该 main 快照，hot-area diff 已覆盖 Scheduler、DP Attention、DeepEP 与大规模 mem_cache refactor，所以不能把本课程的行号和所有边界直接外推到 main。应复用心智模型，再逐条重新验证不变量。</p>
+<div class="invariant"><strong>版本边界也是 correctness boundary</strong>本课程所有实现性声明默认只对 <code>v0.5.15^{commit}=f63458b...</code> 成立。Main 上同名函数不自动拥有相同行为。</div>
+
+<h2>最小自检</h2>
+<div class="quiz" data-answer="2">
+<h3>要查看 main 相对共同祖先的 runtime tree 变化，哪条做法最明确？</h3>
+<label><input type="radio" name="q15" value="1"><code>git diff tag..main</code></label>
+<label><input type="radio" name="q15" value="2"><code>git diff base..main</code></label>
+<label><input type="radio" name="q15" value="3"><code>git show tag-object</code></label>
+<label><input type="radio" name="q15" value="4"><code>git log tag--main</code></label>
+<div class="feedback correct" aria-live="polite">正确。先用 <code>git merge-base</code> 得到 base，再比较 <code>base..main</code>，并另审 <code>base..tag</code> 的 release-only 变化。</div>
+<div class="feedback incorrect" aria-live="polite">不对。分叉历史要显式找共同祖先，分别审 main-side 与 release-side tree diff，不能把 tag 当成 main 的直接祖先。</div>
+</div>
+<div class="quiz" data-answer="4">
+<h3>旧文章使用 <code>HiRadixTree</code>，固定 tag 中找不到该类。第一步应该做什么？</h3>
+<label><input type="radio" name="q15b" value="1">照抄旧类名</label>
+<label><input type="radio" name="q15b" value="2">删除缓存章节</label>
+<label><input type="radio" name="q15b" value="3">假设 main 相同</label>
+<label><input type="radio" name="q15b" value="4">按职责定位当前实现</label>
+<div class="feedback correct" aria-live="polite">正确。先把文章陈述分类为 API 细节，再按职责在固定 tag 定位 <code>HiRadixCache</code> 并验证行为。</div>
+<div class="feedback incorrect" aria-live="polite">不对。类名是版本敏感 API；应保留 tiering 不变量，并在固定 tag 中重新定位实现。</div>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Reference: DSpark 架构速查</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+  onload="renderMathInElement(document.body, {delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}]})"></script>
+</head>
+<body>
+
+<h1>DSpark 架构速查</h1>
+<div class="lesson-meta">Reference Document · DeepSpec 学习系列</div>
+
+<h2>核心公式</h2>
+
+<h3>Per-token latency</h3>
+<div class="math-block">
+$$L = \frac{T_{\text{draft}} + T_{\text{verify}}}{\tau}$$
+</div>
+
+<h3>Block 联合分布（Semi-AR factorization）</h3>
+<div class="math-block">
+$$P(X \mid x_0) = \prod_{k=1}^{\gamma} p_k(x_k \mid x_0, x_{&lt;k})$$
+$$p_k(v \mid x_0, x_{&lt;k}) = \frac{\exp(U_k(v) + B_k(x_0, x_{&lt;k}, v))}{\sum_{u \in \mathcal{V}} \exp(U_k(u) + B_k(x_0, x_{&lt;k}, u))}$$
+</div>
+
+<h3>Markov Head (Low-rank transition bias)</h3>
+<div class="math-block">
+$$B(x_{k-1}, \cdot) = W_1[x_{k-1}] \cdot W_2, \quad W_1 \in \mathbb{R}^{V \times r},\; W_2 \in \mathbb{R}^{r \times V}$$
+</div>
+
+<h3>RNN Head</h3>
+<div class="math-block">
+$$z_k = [s_{k-1};\; W_1[x_{k-1}];\; h_k] \in \mathbb{R}^{2r+d}$$
+$$s_k = \sigma(W_g z_k) \odot s_{k-1} + (1 - \sigma(W_g z_k)) \odot \tanh(W_c z_k)$$
+$$B_k(x_{&lt;k}, \cdot) = W_2^\top \tanh(W_o z_k)$$
+</div>
+
+<h3>Confidence Head</h3>
+<div class="math-block">
+$$c_k = \sigma\bigl(w^\top [h_k;\; W_1[x_{k-1}]]\bigr)$$
+$$c_k^* = 1 - \frac{1}{2}\|p_k^d - p_k^t\|_1 \quad \text{(supervision target)}$$
+</div>
+
+<h3>Prefix Survival Probability</h3>
+<div class="math-block">
+$$a_{r,j} = \prod_{i \leq j} c_{r,i}$$
+</div>
+
+<h3>Throughput Objective (Hardware-Aware Scheduler)</h3>
+<div class="math-block">
+$$\Theta = \tau \cdot \text{SPS}(B), \quad B = \sum_{r=1}^R (1 + \ell_r), \quad \tau = \sum_{r=1}^R \left(1 + \sum_{j=1}^{\ell_r} a_{r,j}\right)$$
+</div>
+
+<h3>Training Loss</h3>
+<div class="math-block">
+$$\mathcal{L} = \alpha_{\text{ce}} \mathcal{L}_{\text{ce}} + \alpha_{\text{tv}} \mathcal{L}_{\text{tv}} + \alpha_{\text{conf}} \mathcal{L}_{\text{conf}}$$
+$$\mathcal{L}_{\text{ce}} = -\sum_k w_k \log p_k^d(x_k^*), \quad \mathcal{L}_{\text{tv}} = \sum_k w_k \|p_k^d - p_k^t\|_1$$
+$$w_k = \exp(-(k-1)/\gamma), \quad \alpha_{\text{ce}}=0.1,\; \alpha_{\text{tv}}=0.9,\; \alpha_{\text{conf}}=1.0$$
+</div>
+
+<h2>架构参数（默认配置 Qwen3-4B）</h2>
+
+<table>
+<tr><th>参数</th><th>值</th><th>说明</th></tr>
+<tr><td>block_size</td><td>7</td><td>每个 anchor 生成的 draft token 数</td></tr>
+<tr><td>num_draft_layers</td><td>5</td><td>draft backbone 的 Transformer 层数</td></tr>
+<tr><td>target_layer_ids</td><td>[1,9,17,25,33]</td><td>从 target model 抽取 hidden states 的层</td></tr>
+<tr><td>markov_rank (r)</td><td>256</td><td>Markov head 的低秩维度</td></tr>
+<tr><td>markov_head_type</td><td>vanilla</td><td>Markov / gated / rnn</td></tr>
+<tr><td>num_anchors (train)</td><td>512</td><td>训练时每个样本采样的 anchor 数</td></tr>
+<tr><td>mask_token_id</td><td>151669</td><td>parallel backbone 的 mask input token</td></tr>
+</table>
+
+<h2>代码文件速查</h2>
+
+<table>
+<tr><th>组件</th><th>文件路径</th></tr>
+<tr><td>DSpark 公共逻辑</td><td><code>deepspec/modeling/dspark/common.py</code></td></tr>
+<tr><td>Markov/RNN Head</td><td><code>deepspec/modeling/dspark/markov_head.py</code></td></tr>
+<tr><td>Qwen3 DSpark Model</td><td><code>deepspec/modeling/dspark/qwen3/modeling.py</code></td></tr>
+<tr><td>DSpark Config Builder</td><td><code>deepspec/modeling/dspark/qwen3/config.py</code></td></tr>
+<tr><td>DSpark Loss</td><td><code>deepspec/modeling/dspark/loss.py</code></td></tr>
+<tr><td>训练配置</td><td><code>config/dspark/dspark_qwen3_4b.py</code></td></tr>
+</table>
+
+<h2>关键术语</h2>
+
+<table>
+<tr><th>术语</th><th>含义</th></tr>
+<tr><td>Anchor token / Bonus token</td><td>上一轮 target verification 产生的最后一个 token，作为下一轮 draft 的输入起点</td></tr>
+<tr><td>Suffix decay</td><td>Parallel drafter 中 acceptance rate 沿 block 位置快速下降的现象</td></tr>
+<tr><td>SPS(B)</td><td>Steps Per Second：给定 batch size B 时 target model 的吞吐量曲线</td></tr>
+<tr><td>Prefix survival probability</td><td>draft 前缀被完整接受的累积概率 (连乘)</td></tr>
+<tr><td>Multi-modal collision</td><td>Parallel 预测在不同位置产生语义不一致组合的现象</td></tr>
+</table>
+
+<div class="lesson-nav">
+  <a href="../lessons/0005-dspark-semi-autoregressive.html">Lesson 05: DSpARK Semi-Autoregressive Drafting</a>
+</div>
+
+</body>
+</html>

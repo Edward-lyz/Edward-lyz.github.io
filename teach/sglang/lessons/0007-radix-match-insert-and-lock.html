@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第七课：Radix match、insert 与 lock</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script defer src="../assets/quiz.js"></script>
+</head>
+<body>
+<h1>Radix match、insert 与 lock</h1>
+<p class="outcome">学完本课，你能手工执行一次 compressed Radix Tree 的 match、node split、insert 和 root-path lock，并给出返回的 physical KV indices。</p>
+
+<h2>Node 同时保存 token segment 与 KV index segment</h2>
+<pre><code>root
+└─ key=[10, 20]      value=[101, 102]
+   ├─ key=[30, 40]   value=[103, 104]
+   └─ key=[50]       value=[205]</code></pre>
+<p><code>key</code> 不是单 token，而是压缩后的 token segment；<code>value</code> 是逐位置对应的 physical KV indices。沿路径拼接 key 得到 cached token prefix，沿同一路径拼接 value 得到 Attention 可直接使用的 slot sequence。<code>extra_key</code> 还会隔离 LoRA、cache salt 等逻辑命名空间。<span class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/mem_cache/radix_cache.py#L45-L238">radix_cache.py:45-238</a>。</span></p>
+
+<h2>Match 可能改变树结构</h2>
+<p>查询 <code>[10, 20, 30, 99]</code> 时，先命中第一段，再与 <code>[30, 40]</code> 匹配一个 token。因为 match 停在 segment 内部，树会把节点拆成 <code>[30]</code> 与 <code>[40]</code>，并返回 <code>[101, 102, 103]</code>。结构被细化，但 K/V buffer 没有重算；新节点只重新分段保存 physical index tensors。</p>
+<pre><code>before: [10,20] → [30,40]
+after:  [10,20] → [30] → [40]
+query:  [10,20,30,99]
+match:  [10,20,30] → slots [101,102,103]</code></pre>
+<p><code>page_size&gt;1</code> 时 key 在 match 前向下取整到 page boundary，segment split 也只能发生在合法 page boundary。<span class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/mem_cache/radix_cache.py#L355-L413">radix_cache.py:355-413</a> 与 <a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/mem_cache/radix_cache.py#L648-L703">radix_cache.py:648-703</a>。</span></p>
+
+<h2>Insert 返回已经存在的 prefix 长度</h2>
+<p>插入 <code>[10,20,50,60]</code> 与 slots <code>[301,302,305,306]</code> 时，前两 token 已由 canonical tree slots <code>[101,102]</code> 表示。insert 沿已有路径走过 2，再创建新 segment <code>[50,60]</code>；返回 <code>prefix_len=2</code>。调用者据此释放重复的 <code>[301,302]</code>。</p>
+<div class="invariant"><strong>Tree 的价值是 canonical ownership</strong>相同 token prefix 最终由一组 physical slots 表示。否则每个 request 只保存自己的副本，Radix Tree 只是索引而没有节省显存。</div>
+<p class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/mem_cache/radix_cache.py#L415-L435">radix_cache.py:415-435</a> 与 <a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/mem_cache/radix_cache.py#L704-L758">radix_cache.py:704-758</a>。</p>
+
+<h2>Lock 保护的是整条 prefix path</h2>
+<p>request 命中 terminal node 后，<code>inc_lock_ref</code> 从该 node 一直走到 root 之前。某 node 从 <code>0 → 1</code> 时，其 segment 从 evictable accounting 转到 protected accounting；多个 requests 可让计数继续增加，但 physical segment 只计算一次。释放 request 时沿同一路径 <code>dec_lock_ref</code>，只有 <code>1 → 0</code> 才重新成为 evictable。</p>
+<pre><code>request A locks leaf: parent 0→1, leaf 0→1
+request B locks leaf: parent 1→2, leaf 1→2
+A finishes:          parent 2→1, leaf 2→1  still protected
+B finishes:          parent 1→0, leaf 1→0  evictable again</code></pre>
+<p class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/mem_cache/radix_cache.py#L592-L627">radix_cache.py:592-627</a>。</p>
+
+<h2>最小自检</h2>
+<div class="quiz" data-answer="2">
+<h3>Match 在一个 compressed segment 内结束并触发 split，哪项描述正确？</h3>
+<label><input type="radio" name="q7" value="1">重新计算全部 K/V</label>
+<label><input type="radio" name="q7" value="2">重分索引不重算 K/V</label>
+<label><input type="radio" name="q7" value="3">释放共享全部 K/V</label>
+<label><input type="radio" name="q7" value="4">复制请求全部 K/V</label>
+<div class="feedback correct" aria-live="polite">正确。split 细分 token/index segments，physical K/V slots 仍是原来的 slots，不做模型重算。</div>
+<div class="feedback incorrect" aria-live="polite">不对。node split 是索引结构调整。它切分保存 slot ids 的 tensors，不重新执行模型，也不复制 K/V buffer。</div>
+</div>
+</body>
+</html>

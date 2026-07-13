@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 02: EAGLE2 — Context-Aware Dynamic Draft with Tree Attention</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+  onload="renderMathInElement(document.body, {delimiters:[{left:'\\[',right:'\\]',display:true},{left:'\\(',right:'\\)',display:false}]})"></script>
+<script defer src="../assets/quiz.js"></script>
+</head>
+<body>
+
+<h1>EAGLE2：Context-Aware Dynamic Draft with Tree Attention</h1>
+
+<p class="lesson-meta">
+<strong>前置阅读</strong>：<a href="../reference/glossary.html">术语表</a> ·
+<a href="0001-eagle-feature-level-draft.html">Lesson 01: EAGLE</a><br>
+<strong>主要参考</strong>：<a href="https://arxiv.org/abs/2406.16858">EAGLE-2: Faster Inference of Language Models with Dynamic Draft Trees (Li et al., 2024)</a>
+</p>
+
+<!-- ═══════════ 一图流 ═══════════ -->
+<h2>一图流：EAGLE2 动态树展开 + 验证</h2>
+
+<iframe src="../assets/eagle2-animation.html" title="EAGLE2 动态树展开动画" style="width:100%; aspect-ratio:5/4; border:1px solid #333; border-radius:8px;" loading="lazy"></iframe>
+
+<!-- ═══════════ 背景 ═══════════ -->
+<h2>1. 背景：EAGLE 的两个瓶颈</h2>
+
+<h3>1.1 固定 draft length 的浪费</h3>
+
+<p>EAGLE 使用固定 block size \(\gamma\)。但不同 context 的难度天差地别：</p>
+
+<ul>
+<li>简单续写（如 "Hello, how are" → "you"）：position 1 就能达到 0.95 acceptance rate</li>
+<li>复杂生成（如代码逻辑分支）：position 3 以后 acceptance rate 可能跌到 0.3 以下</li>
+</ul>
+
+<p>固定 \(\gamma\) 意味着：简单 context 少生成了（本可以多猜几个），复杂 context 浪费了验证资源（后几个大概率被拒）。</p>
+
+<h3>1.2 线性链 draft 的信息浪费</h3>
+
+<p>EAGLE 只输出一条线性链 \((\hat{x}_1, \hat{x}_2, \ldots, \hat{x}_\gamma)\)。一旦 \(\hat{x}_k\) 被拒，\(k+1\) 到 \(\gamma\) 全部废弃，即使它们中有些可能是对的（只是走了不同的分支）。</p>
+
+<div class="key-insight">
+<strong>EAGLE2 的目标</strong>：<br>
+① 动态决定每轮 draft 多少 token（context-aware）<br>
+② 用 tree 而非 chain 组织 draft，让 target 一次验证多条路径<br>
+③ 根据 draft confidence 决定树的形状——高置信方向多展开，低置信方向少展开
+</div>
+
+<!-- ═══════════ 创新点 ═══════════ -->
+<h2>2. 创新点</h2>
+
+<h3>2.1 Tree Draft 替代 Chain Draft</h3>
+
+<p>EAGLE 输出一条链（每个 position 只有 1 个候选）。EAGLE2 输出一棵树（每个节点可以有多个 children）：</p>
+
+<table>
+<tr><th>结构</th><th>Draft tokens</th><th>Target 验证次数</th><th>可能的接受路径</th></tr>
+<tr><td>Chain (γ=6)</td><td>6</td><td>1 次前传（6+1 token）</td><td>只有 1 条</td></tr>
+<tr><td>Tree (6 nodes)</td><td>6</td><td>1 次前传（6+1 token，用 tree attention）</td><td>多条（树的所有 root→leaf 路径）</td></tr>
+</table>
+
+<p>关键：<strong>验证成本相同</strong>（target 前传的 token 数一样），但 tree 覆盖了更多可能的续写分支 → acceptance 更高。</p>
+
+<h3>2.2 Tree Attention</h3>
+
+<p>Tree draft 的验证需要特殊的 attention mask：每个节点只能 attend to 它的祖先节点（而非所有 draft token）：</p>
+
+<div class="math-block">
+<span class="label">Tree Attention Mask</span>
+\[\text{mask}(i, j) = \begin{cases}
+1 & \text{if } j \text{ is ancestor of } i \text{ in the draft tree} \\
+1 & \text{if } j \text{ is in the context prefix} \\
+0 & \text{otherwise}
+\end{cases}\]
+</div>
+
+<p>这保证每条 root→leaf 路径的验证结果独立于其他分支——和对该路径单独做 chain verification 完全等价。</p>
+
+<h3>2.3 Draft-Phase Confidence：决定树的形状</h3>
+
+<p>EAGLE2 的核心创新是<strong>在 draft 过程中估计每个节点的 acceptance confidence</strong>，然后根据 confidence 动态决定：</p>
+
+<ol>
+<li>哪些节点值得展开 children（高 confidence → 多展开）</li>
+<li>总共展开多少节点（达到 budget 上限 \(B\) 时停止）</li>
+</ol>
+
+<p>Confidence 估计基于 draft model 自身的 top-1 概率——这是一个免费的信号，无需额外计算：</p>
+
+<div class="math-block">
+<span class="label">Draft confidence 的 proxy</span>
+\[\text{conf}(k) = \max_v\; p^d_k(v)\]
+</div>
+
+<p>直觉：如果 draft model 对某个位置的预测高度集中在一个 token 上（\(\max p^d \to 1\)），那 target 接受它的概率也很高。</p>
+
+<!-- ═══════════ 公式推导 ═══════════ -->
+<h2>3. 公式推导</h2>
+
+<h3>3.1 Tree Draft 的展开策略</h3>
+
+<p>给定 draft token budget \(B\)（总共允许放多少节点在树里），EAGLE2 用贪心策略展开：</p>
+
+<div class="derivation">
+<div class="step">
+<span class="step-label">Step 1：初始化 — 从 anchor 生成 top-k children</span>
+<p>对 anchor token \(x_0\)，取 draft distribution 的 top-\(k_0\) 个 token 作为 depth-1 节点：</p>
+\[\text{children}(x_0) = \text{top-}k_0\; p^d_1(\cdot)\]
+<p>\(k_0\) 通常取 10。这些节点加入候选队列 Q，每个节点携带其 draft 概率。</p>
+</div>
+
+<div class="step">
+<span class="step-label">Step 2：展开循环 — 贪心选最高 confidence 的叶节点</span>
+<p>重复以下操作直到树中节点数达到 budget B：</p>
+\[\text{next\_node} = \arg\max_{n \in \text{leaves}(T)} \text{path\_conf}(n)\]
+<p>其中 path confidence 是从 root 到该节点所有 draft 概率的连乘：</p>
+\[\text{path\_conf}(n) = \prod_{i \in \text{path}(\text{root} \to n)} p^d_i(\text{token}_i)\]
+<p>选中后，对该节点运行一步 draft model → 得到下一层的 top-k children → 加入树。</p>
+</div>
+
+<div class="step">
+<span class="step-label">Step 3：达到 budget → 停止展开</span>
+<p>当 \(|T| = B\) 时停止。此时树的形状<strong>自动适应了 context 难度</strong>：</p>
+<ul>
+<li>简单 context：高 confidence 一条主路径很长 + 少量分支</li>
+<li>复杂 context：主路径短，多条分支各走几步</li>
+</ul>
+</div>
+</div>
+
+<h3>3.2 Tree Verification 的概率分析</h3>
+
+<p>Tree 中的每条 root→leaf 路径是一个独立的 chain。Target model 一次前传可以同时验证所有路径。</p>
+
+<div class="derivation">
+<div class="step">
+<span class="step-label">Step 1：定义路径集合</span>
+<p>设树 \(T\) 有 \(M\) 条 root→leaf 路径 \(\pi_1, \ldots, \pi_M\)，每条路径 \(\pi_m\) 包含节点序列 \((n_{m,1}, n_{m,2}, \ldots, n_{m,L_m})\)。</p>
+</div>
+
+<div class="step">
+<span class="step-label">Step 2：每条路径的 acceptance length</span>
+<p>对路径 \(\pi_m\)，standard rejection sampling 逐 token 验证。被接受的前缀长度为随机变量 \(\tau_m\)。</p>
+\[\mathbb{E}[\tau_m] = 1 + \sum_{j=1}^{L_m} \prod_{i=1}^{j} c_{m,i}\]
+<p>其中 \(c_{m,i} = 1 - \text{TV}(p^d_{m,i},\; p^t_{m,i})\) 是第 i 个位置的条件接受概率。</p>
+</div>
+
+<div class="step">
+<span class="step-label">Step 3：Tree 的有效 acceptance length</span>
+<p>Target 一次验证后，从所有路径中选接受最长的那条：</p>
+\[\tau_{\text{tree}} = \max_{m=1}^M \tau_m\]
+<p>这是 tree draft 相比 chain draft 的核心收益——<strong>多条路径的 max 一定 ≥ 单条路径</strong>。</p>
+</div>
+
+<div class="step">
+<span class="step-label">Step 4：相比 chain 的提升</span>
+<p>设 chain 的 expected acceptance 为 \(\tau_{\text{chain}}\)，tree 满足：</p>
+\[\mathbb{E}[\tau_{\text{tree}}] \geq \mathbb{E}[\tau_{\text{chain}}]\]
+<p>等号在 tree 退化为 chain 时取到。不等号的紧度取决于路径之间的相关性——路径越独立，tree 收益越大。</p>
+</div>
+</div>
+
+<h3>3.3 Tree Verification 的具体执行机制</h3>
+
+<p>Tree draft 的验证与标准 chain verification（Lesson 00）的核心规则完全一致（\(r = \min(1, p/q)\) 接受、残差 resample、bonus）。区别在于：树中多条路径<strong>并行验证</strong>，且最终只接纳一条。</p>
+
+<div class="derivation">
+<div class="step">
+<span class="step-label">Step 1: Target 一次前传的输入构造</span>
+<p>将树的所有节点展平为序列 \([x_0, n_1, n_2, \ldots, n_B]\)，配合 tree attention mask 送入 target。Target 一次前传输出每个节点位置对应的 next-token 分布 \(p_i\)。关键：tree attention mask 保证<strong>每条路径的 \(p_k\) 与单独验证该路径时完全一致</strong>——因为每个节点只 attend to 其祖先，不受其他分支干扰。</p>
+</div>
+
+<div class="step">
+<span class="step-label">Step 2: 每条路径独立做 rejection sampling</span>
+<p>对每条 root→leaf 路径 \(\pi_m = (n_{m,1}, \ldots, n_{m,L_m})\)，逐节点执行标准 rejection sampling：</p>
+\[r_{m,k} = \min\!\left(1,\; \frac{p_{m,k}(\tilde{x}_{m,k})}{q_{m,k}(\tilde{x}_{m,k})}\right)\]
+<p>采样 \(u \sim \text{Uniform}(0,1)\)，\(u \le r_{m,k}\) 则接受，否则拒绝。每条路径得到各自的 accepted prefix length \(\tau_m\)。</p>
+</div>
+
+<div class="step">
+<span class="step-label">Step 3: 取最长接受路径</span>
+<p>所有路径验证完后，选接受前缀最长的那条：</p>
+\[m^* = \arg\max_m \tau_m\]
+<p>采纳 \(\pi_{m^*}\) 的前 \(\tau_{m^*}\) 个 token。其他路径的结果全部丢弃。</p>
+</div>
+
+<div class="step">
+<span class="step-label">Step 4: Bonus / resample 的产出</span>
+<p>选定路径 \(\pi_{m^*}\) 后：</p>
+<ul>
+<li>若该路径全部接受（\(\tau_{m^*} = L_{m^*}\)）：从 \(p_{m^*, L_{m^*}+1}\) 采样 bonus token</li>
+<li>若中途拒绝（第 \(\tau_{m^*}+1\) 个节点被拒）：从残差分布 \(\text{norm}(\max(0, p - q))\) resample</li>
+</ul>
+<p>两种情况都与标准 rejection sampling 完全一致，lossless 保证不变。</p>
+</div>
+
+<div class="step">
+<span class="step-label">Step 5: 为什么取 max 不破坏 lossless？</span>
+<p>关键观察：每条路径的 rejection sampling 独立执行。「取最长路径」不是基于 target 输出做的「选择性截断」，而是对<strong>所有路径都完整执行了 verification</strong> 后的统计结果。每条路径上的输出 token 都服从 \(p\)（由 Lesson 00 证明）。“取最长”只是从多个已确认正确的结果中选一个——不引入偏差。</p>
+</div>
+</div>
+
+<div class="key-insight">
+<strong>Tree verification vs Chain verification 的本质区别</strong>：<br><br>
+• <strong>Rejection sampling rule</strong>：完全一样（min(1, p/q)、残差 resample、bonus）<br>
+• <strong>Attention mask</strong>：chain 是因果 mask；tree 是祖先 mask（每个节点只看它的祖先链）<br>
+• <strong>接受策略</strong>：chain 取唯一前缀；tree 取所有路径中最长的前缀<br>
+• <strong>Lossless</strong>：两者都保证（每条路径独立 valid，取 max 不引入 selection bias）
+</div>
+
+<h3>3.4 Reward-Guided Draft：Expansion Value</h3>
+
+<p>EAGLE2 对每个候选展开节点计算一个 expansion value，决定是否展开它：</p>
+
+<div class="math-block">
+<span class="label">Expansion value：展开该节点的边际收益</span>
+\[\Delta\tau(n) = \text{path\_conf}(n) \cdot \underbrace{p^d_{\text{child}}(\text{top-1})}_{\text{child 被接受的概率 proxy}}\]
+</div>
+
+<div class="derivation">
+<div class="step">
+<span class="step-label">推导</span>
+<p>展开节点 n 的 child 带来的 expected 额外 accepted tokens 近似为：</p>
+\[\Delta\tau(n) \approx P(\text{path to } n \text{ all accepted}) \times P(\text{child accepted})\]
+<p>第一项 = path_conf(n)（从根到 n 全部被接受的概率 proxy）。<br>
+第二项 ≈ draft model 的 top-1 概率（当 draft 非常确定时，target 大概率同意）。</p>
+<p>全部候选按 \(\Delta\tau\) 降序排列，贪心取到 budget B 为止。</p>
+</div>
+</div>
+
+<h3>3.4 Speed-Up 公式</h3>
+
+<p>与 EAGLE 相同的 per-token latency 模型，但 τ 更大：</p>
+
+<div class="math-block">
+<span class="label">Per-token latency (tree)</span>
+\[L_{\text{tree}} = \frac{T_{\text{draft}}(B) + T_{\text{verify}}(B)}{\tau_{\text{tree}}}\]
+</div>
+
+<p>其中 \(T_{\text{draft}}(B)\) 是生成 B 个 tree 节点的总耗时。由于树的展开仍然是 sequential 的（每一步依赖上一步的 feature），\(T_{\text{draft}}\) 正比于树的<strong>最大深度</strong>而非节点总数：</p>
+
+<div class="math-block">
+<span class="label">Draft 延迟只取决于深度</span>
+\[T_{\text{draft}} = \text{depth}(T) \times T_{\text{step}}\]
+</div>
+
+<p>这是因为同一层的多个节点可以 batch 在一起并行做 draft model 前传。</p>
+
+<!-- ═══════════ 对比 ═══════════ -->
+<h2>4. EAGLE vs EAGLE2 关键对比</h2>
+
+<table>
+<tr><th></th><th>EAGLE</th><th>EAGLE2</th></tr>
+<tr><td>Draft 结构</td><td>单链（固定长度 γ）</td><td>动态树（固定 budget B）</td></tr>
+<tr><td>树形状</td><td>—</td><td>Context-aware（高置信方向多展开）</td></tr>
+<tr><td>Verification</td><td>线性 rejection sampling</td><td>Tree attention + 多路径 max</td></tr>
+<tr><td>Confidence 信号</td><td>不使用</td><td>Draft top-1 概率（免费）</td></tr>
+<tr><td>Accept length</td><td>\(\tau_{\text{chain}}\)</td><td>\(\tau_{\text{tree}} \geq \tau_{\text{chain}}\)</td></tr>
+<tr><td>Draft 延迟</td><td>\(\gamma \times T_{\text{step}}\)</td><td>\(\text{depth}(T) \times T_{\text{step}}\)（通常 depth 更大但有 batch）</td></tr>
+<tr><td>Speedup (Vicuna-13B)</td><td>3.05×</td><td>3.53×</td></tr>
+</table>
+
+<!-- ═══════════ 小结 ═══════════ -->
+<h2>5. 小结</h2>
+
+<div class="key-insight">
+<strong>EAGLE2 的三个核心改进</strong>：<br>
+① <strong>Tree draft</strong>：用树替代链，一次验证覆盖多条路径 → acceptance 取 max，一定更高<br>
+② <strong>Context-aware expansion</strong>：根据 path confidence 贪心展开，自动适配 context 难度<br>
+③ <strong>Dynamic budget</strong>：不再固定 draft length，而是根据 acceptance 预期动态分配<br><br>
+<strong>遗留问题</strong>：draft model 仍然是 1 层，表达力受限。树的展开仍是 autoregressive 的——depth 决定延迟。EAGLE3 将用更深的 draft model + TTT 训练范式解决这些。
+</div>
+
+<!-- ═══════════ Quiz ═══════════ -->
+<h2>6. Quiz</h2>
+
+<div class="quiz" data-answer="2">
+  <h4>Q1: Tree verification 相比 chain verification 能提高 acceptance length 的根本原因是？</h4>
+  <label><input type="radio" name="q1" value="1"> Tree attention 的计算效率更高，可以验证更多 token</label>
+  <label><input type="radio" name="q1" value="2"> 多条路径的最大值一定大于等于单条路径的值</label>
+  <label><input type="radio" name="q1" value="3"> 树结构让每个节点的 acceptance rate 本身变高了</label>
+  <div class="feedback correct">✓ 正确！Tree 本质是用相同验证成本覆盖多条候选路径，取最长被接受的那条。\(\max_m \tau_m \geq \tau_{\text{any single chain}}\)。</div>
+  <div class="feedback incorrect">✗ Tree attention 的成本和 chain 相同（token 数一样）。树不改变单个节点的 acceptance rate——它改变的是「有多少条路径有机会被选中」。</div>
+</div>
+
+<div class="quiz" data-answer="3">
+  <h4>Q2: EAGLE2 用什么信号决定树的展开形状？</h4>
+  <label><input type="radio" name="q2" value="1"> Target model 的 hidden state 方差（高方差 = 不确定 = 少展开）</label>
+  <label><input type="radio" name="q2" value="2"> 一个额外训练的 confidence head（类似 DSpark）</label>
+  <label><input type="radio" name="q2" value="3"> Draft model 自身的 top-1 概率及其路径连乘（免费信号）</label>
+  <div class="feedback correct">✓ 正确！EAGLE2 直接复用 draft distribution 的 \(\max_v p^d(v)\) 作为 confidence proxy，不需要额外网络。路径 confidence = 路径上所有 top-1 概率的连乘。</div>
+  <div class="feedback incorrect">✗ EAGLE2 不使用额外的 confidence head（那是 DSpark 的设计），也不需要 target hidden states 的统计量。它的 confidence 信号是免费的——直接从 draft logits 得到。</div>
+</div>
+
+<div class="quiz" data-answer="1">
+  <h4>Q3: EAGLE2 的 tree draft 延迟 T_draft 取决于什么？</h4>
+  <label><input type="radio" name="q3" value="1"> 树的最大深度（同层节点可以 batch 并行）</label>
+  <label><input type="radio" name="q3" value="2"> 树的总节点数 B（每个节点单独做一次前传）</label>
+  <label><input type="radio" name="q3" value="3"> 树的叶节点数量（只有叶节点参与验证）</label>
+  <div class="feedback correct">✓ 正确！Draft model 的 autoregressive 依赖是「depth-wise」的——每一层依赖上一层的 feature。但同一层的多个节点互不依赖，可以 batch。所以 \(T_{\text{draft}} = \text{depth}(T) \times T_{\text{step}}\)。</div>
+  <div class="feedback incorrect">✗ 同一层的节点没有依赖关系，可以合并为一个 batch。决定延迟的是树的深度（层数），不是总节点数或叶节点数。</div>
+</div>
+
+<div class="followup">
+<strong>💬 有疑问？</strong> 问我关于 tree attention mask 的具体实现、expansion value 的近似误差分析、或 tree draft 与 SpecInfer 的对比。下一课将讲 EAGLE3 如何用 TTT 训练范式和更深网络进一步提升精度。
+</div>
+
+</body>
+</html>

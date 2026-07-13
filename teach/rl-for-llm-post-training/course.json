@@ -1,0 +1,35 @@
+{
+  "title": "RL for LLM Post-Training",
+  "lessons": [
+    {
+      "title": "RL 的五个基本概念",
+      "path": "lessons/0001-rl-five-basics.html"
+    },
+    {
+      "title": "多步决策与 Rollout",
+      "path": "lessons/0002-multi-step-rollout.html"
+    },
+    {
+      "title": "方差、Baseline 与 Advantage",
+      "path": "lessons/0003-variance-and-baseline.html"
+    },
+    {
+      "title": "PPO：防止更新过猛",
+      "path": "lessons/0004-ppo.html"
+    },
+    {
+      "title": "GRPO：不需要 Critic 的 RL",
+      "path": "lessons/0005-grpo.html"
+    },
+    {
+      "title": "冷启动、蒸馏与 RL 的因果关系",
+      "path": "lessons/0006-cold-start-and-distillation.html"
+    }
+  ],
+  "references": [
+    {
+      "title": "术语表",
+      "path": "reference/glossary.html"
+    }
+  ]
+}

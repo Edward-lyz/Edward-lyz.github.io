@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 06 — 冷启动、蒸馏与 RL 的因果关系</title>
+<link rel="stylesheet" href="../assets/rl-course.css">
+<script src="../assets/quiz.js" defer></script>
+</head>
+<body>
+
+<p class="lesson-number">Lesson 06</p>
+<h1>冷启动、蒸馏与 RL 的因果关系</h1>
+<p class="subtitle">把前五课串起来，回答「蒸馏之后 RL 还受影响吗」</p>
+
+<!-- ====== SECTION 1 ====== -->
+<h2>1. 这节课要回答的问题</h2>
+
+<p>学完前五课，你已经知道了 policy gradient、rollout、advantage、PPO、GRPO。现在回到最初 GPT Pro 分析的核心争论：</p>
+
+<ol>
+<li>冷启动的教师数据（比如 Claude 轨迹）用完之后还有影响吗？</li>
+<li>蒸馏只能用在 RL 之前吗？</li>
+<li>RL 能凭空创造能力吗？</li>
+</ol>
+
+<!-- ====== SECTION 2 ====== -->
+<h2>2. SFT 冷启动到底做了什么</h2>
+
+<p>回忆 Lesson 02 的结论：policy gradient 需要采到有 reward 差异的 rollout 才有梯度。</p>
+
+<p>如果模型做对某任务的概率极低，比如 p = 10⁻⁶，那么：</p>
+
+<div class="math-block">
+1000 条 rollout 中至少一条成功的概率 ≈ 1 − (1−10⁻⁶)^1000 ≈ 0.001
+</div>
+
+<p>几乎采不到成功轨迹 → policy gradient ≈ 零向量 → 学不动。</p>
+
+<p>冷启动（用教师轨迹做 SFT）的作用：</p>
+
+<div class="math-block">
+把成功概率从 10⁻⁶ 提到比如 0.01
+</div>
+
+<div class="math-block">
+1 − (1−0.01)^1000 ≈ 0.99996
+</div>
+
+<div class="key-insight">
+<p><strong>冷启动的本质不是注入全部能力，而是把成功率从「采不到」提高到「RL 能持续采到并优化」的区间。</strong></p>
+</div>
+
+<h3>SFT 梯度 vs RL 梯度的信号密度</h3>
+
+<table>
+<tr><th></th><th>SFT（教师轨迹）</th><th>RL (Policy Gradient)</th></tr>
+<tr><td>每个 token</td><td>明确梯度：∇log π(教师token)</td><td>只有采到好结果才有梯度</td></tr>
+<tr><td>不依赖模型自身</td><td>✓ 不管模型当前多差都能学</td><td>✗ 如果模型太差就采不到好结果</td></tr>
+<tr><td>多样性</td><td>受限于教师给的那几条轨迹</td><td>模型自己探索，更多样</td></tr>
+</table>
+
+<!-- ====== SECTION 3 ====== -->
+<h2>3. 长轨迹为什么更依赖冷启动</h2>
+
+<p>假设任务需要连续 20 步决策，每步做对的概率是 q。</p>
+
+<div class="math-block">
+P(整条轨迹成功) = q²⁰
+</div>
+
+<table>
+<tr><th>每步正确率 q</th><th>整条成功率 q²⁰</th></tr>
+<tr><td>0.7</td><td>0.08%</td></tr>
+<tr><td>0.8</td><td>1.15%</td></tr>
+<tr><td>0.9</td><td>12.2%</td></tr>
+</table>
+
+<p>每步只提高 10 个百分点，整条成功率可以提高一个数量级。</p>
+
+<p>这解释了为什么 coding agent、长程搜索等任务比单步问答更依赖好的初始化：链式效应让微小的单步改善产生巨大的轨迹级差异。</p>
+
+<!-- ====== SECTION 4 ====== -->
+<h2>4. 训练是路径依赖的</h2>
+
+<p>这是回答第一个问题的关键。把训练写成递归形式：</p>
+
+<pre><code>θ₁ = θ₀ − η · ∇L_teacher(θ₀)     ← 冷启动：用教师数据更新一次
+
+τ₁ ~ π(θ₁)                         ← 用更新后的模型生成 rollout
+θ₂ = Update(θ₁, τ₁, R₁)           ← RL 第一步
+
+τ₂ ~ π(θ₂)                         ← 用再次更新后的模型生成 rollout
+θ₃ = Update(θ₂, τ₂, R₂)           ← RL 第二步
+
+...以此类推</code></pre>
+
+<p>注意因果链：</p>
+
+<div class="math-block">
+教师数据 → θ₁ → τ₁ → θ₂ → τ₂ → θ₃ → ... → θ<sub>最终</sub>
+</div>
+
+<p>每一步的 rollout 由上一步的参数决定；上一步的参数又由再上一步的 rollout 决定。</p>
+
+<div class="key-insight">
+<p><strong>「不再读取教师数据」只说明教师不再直接提供梯度。<br>
+但教师数据已经改变了 θ₁，θ₁ 决定了 τ₁ 的分布，τ₁ 又影响了后续所有更新。<br><br>
+因果影响沿着训练路径传播，不会因为「文件被删了」就消失。</strong></p>
+</div>
+
+<p>类比：你高中老师不再教你了，但 ta 教给你的思维方式影响了你大学的选课、读什么书、做什么研究。影响是路径依赖的。</p>
+
+<!-- ====== SECTION 5 ====== -->
+<h2>5. 蒸馏不止于冷启动</h2>
+
+<p>很多人以为蒸馏 = 冷启动。实际上有多种形式和时机：</p>
+
+<table>
+<tr><th>蒸馏类型</th><th>时机</th><th>做什么</th></tr>
+<tr><td>离线 SFT 蒸馏</td><td>RL 之前</td><td>用教师输出做 SFT 数据</td></tr>
+<tr><td>Soft distillation</td><td>任何时候</td><td>用教师的概率分布（而非只是最终输出）做 KL loss</td></tr>
+<tr><td>On-Policy Distillation (OPD)</td><td>RL 之后</td><td>student 生成 rollout，teacher 在 student 的状态上给指导</td></tr>
+<tr><td>Cross-stage OPD</td><td>多阶段训练末期</td><td>把不同阶段的 expert 合并进一个模型</td></tr>
+</table>
+
+<h3>On-Policy Distillation 的关键区别</h3>
+
+<p>普通蒸馏：teacher 生成标准轨迹，student 模仿。</p>
+<p>OPD：<strong>student 自己生成轨迹</strong>，teacher 在 student 实际走到的状态上给出指导。</p>
+
+<p>为什么这很重要？</p>
+
+<pre><code>教师标准轨迹:  读测试 → 定位函数 → 修复 → 运行测试
+
+Student 实际走成: 读测试 → 改错文件 → 出现新错误 → ???
+
+普通蒸馏：student 不知道从错误状态怎么恢复（没见过这种状态）
+OPD：teacher 在 student 的错误状态上告诉它下一步该怎么做</code></pre>
+
+<div class="key-insight">
+<p><strong>OPD 解决的是 distribution mismatch：student 部署时走到的状态，和 teacher 标准轨迹中出现的状态不一样。OPD 让 teacher 在 student 的实际分布上教学。</strong></p>
+</div>
+
+<!-- ====== SECTION 6 ====== -->
+<h2>6. GLM-5 / GLM-5.2 的实际训练流程</h2>
+
+<p>GLM-5 公开描述的流程：</p>
+
+<pre><code>SFT → Reasoning RL → Agentic RL → General RL → On-policy cross-stage distillation</code></pre>
+
+<p>最后一步的 OPD 不是冷启动。它发生在所有 RL 之后，用来：</p>
+
+<ul>
+<li>把 Reasoning RL 阶段的推理能力恢复（可能被后续 RL 阶段覆盖）</li>
+<li>把 Agentic RL 阶段的工具使用能力保留</li>
+<li>合并多个 expert models 的能力进最终模型</li>
+</ul>
+
+<p>GLM-5.2 更进一步：用 OPD 合并了十多个 expert models。</p>
+
+<p>这直接证明：<strong>蒸馏不只是冷启动手段，它在 RL 后仍然发挥作用。</strong></p>
+
+<!-- ====== SECTION 7 ====== -->
+<h2>7. 完整图景：LLM 后训练的链条</h2>
+
+<pre><code>预训练          → 基础语言能力和世界知识
+    ↓
+SFT / 蒸馏冷启动  → 把成功率从 ≈0 提到 RL 能工作的范围
+    ↓
+RL rollout       → 模型自己生成轨迹（必须有！）
+    ↓
+Reward / Critic  → 判断哪些动作好
+    ↓
+PPO / GRPO       → 调整动作概率
+    ↓
+后期 OPD         → 合并多个阶段/多个 expert 的能力
+    ↓
+最终模型</code></pre>
+
+<p>每一层都不可跳过（除非前一层已经足够强）：</p>
+
+<ul>
+<li>预训练不够强 → SFT 救不了</li>
+<li>SFT 后成功率还太低 → RL 启动不了</li>
+<li>RL 的 reward 有漏洞 → 学到错误行为</li>
+<li>多个阶段各有擅长 → 需要 OPD 合并</li>
+</ul>
+
+<!-- ====== SECTION 8 ====== -->
+<h2>8. 回答开头的三个问题</h2>
+
+<h3>问题 1：冷启动数据用完后还有影响吗？</h3>
+
+<p><strong>有。</strong>训练是路径依赖的。教师数据改变了初始参数，初始参数决定了后续所有 rollout 的分布，进而影响全部后续更新。影响不会因为「不再读取文件」而消失。</p>
+
+<h3>问题 2：蒸馏只能用在 RL 之前吗？</h3>
+
+<p><strong>不是。</strong>GLM-5/5.2 在 RL 之后使用 OPD 合并能力。蒸馏可以在任何阶段使用，每个阶段解决不同问题：</p>
+<ul>
+<li>RL 前：冷启动，提高成功率</li>
+<li>RL 中：可以用 teacher 做 reward model 或 advantage 的辅助信号</li>
+<li>RL 后：OPD 恢复丢失能力、合并 expert</li>
+</ul>
+
+<h3>问题 3：RL 能凭空创造能力吗？</h3>
+
+<p><strong>有条件地能。</strong>如果预训练模型已经有非零的成功概率（哪怕很小但能采到），RL 可以通过持续采样和优化放大这个概率。DeepSeek-R1-Zero 证明了这点。但如果成功率为零，policy gradient 就是零向量，RL 无法启动。</p>
+
+<!-- ====== SECTION 9 ====== -->
+<h2>9. 判断技术声明的框架</h2>
+
+<p>学完这六课后，你应该能独立判断以下类型的声明：</p>
+
+<table>
+<tr><th>声明</th><th>判断</th><th>依据（哪节课）</th></tr>
+<tr><td>RL 后不需要 rollout</td><td>错误</td><td>Lesson 02: on-policy 梯度估计必须采样</td></tr>
+<tr><td>RL 后不需要教师 rollout</td><td>可能成立</td><td>Lesson 02: 教师 rollout 和 RL rollout 是不同概念</td></tr>
+<tr><td>冷启动数据删了就没影响了</td><td>错误</td><td>本课 §4: 路径依赖</td></tr>
+<tr><td>蒸馏只用于冷启动</td><td>错误</td><td>本课 §5-6: OPD 发生在 RL 之后</td></tr>
+<tr><td>全失败时 GRPO 能学到东西</td><td>错误</td><td>Lesson 05: advantage 全为零</td></tr>
+<tr><td>PPO 不需要 Critic</td><td>错误</td><td>Lesson 04: Critic 估计 V(s) 是 PPO 的核心组件</td></tr>
+<tr><td>输出像 Claude 就证明蒸馏了 Claude</td><td>证据不足</td><td>多个假设都能产生相似输出</td></tr>
+</table>
+
+<!-- ====== QUIZ ====== -->
+<div class="quiz-container">
+<h3>检验理解 ✍️</h3>
+<p>同一个 prompt 生成 8 条 rollout，8 条全部失败（reward=0）。如果改用一条正确的教师轨迹做 SFT，情况有何不同？</p>
+
+<div class="quiz-option" data-correct="true" data-explanation="正确。8 条全失败时 GRPO/PG 梯度为零。但 SFT 对教师轨迹中的每个 token 都有明确梯度 ∇log π(教师token)，不依赖模型自己的采样结果。">GRPO 梯度为零因为没有对比信号；SFT 仍有明确的逐 token 梯度因为不依赖采样</div>
+<div class="quiz-option" data-correct="false" data-explanation="SFT 的梯度密度远高于全失败时的 RL（后者梯度为零）。差距不是略好，是有vs无。">两者效果相近，因为一条教师轨迹的信息量也很有限</div>
+<div class="quiz-option" data-correct="false" data-explanation="SFT loss 是 −log π(教师token)，本身就有良定义的梯度，不需要 reward。">SFT 也需要 reward 信号，没有 reward 就和 RL 一样学不了</div>
+<div class="quiz-option" data-correct="false" data-explanation="全失败时 PG 梯度为零向量。负 reward 才能产生负梯度，这里是零 reward。">全失败时 RL 仍有负向梯度来压低失败动作的概率</div>
+
+<div class="quiz-feedback"></div>
+</div>
+
+<!-- ====== SECTION 10 ====== -->
+<h2>10. 六课总回顾</h2>
+
+<pre><code>Lesson 01: State, Action, Policy, Reward, θ → 最大化 E[R]
+Lesson 02: Trajectory, Rollout → 多步 PG = E[R · Σ∇logπ]
+Lesson 03: 方差太高 → Baseline → V(s) → Advantage A = Q−V
+Lesson 04: 更新过猛 → PPO clip ρ ∈ [1−ε, 1+ε]
+Lesson 05: 不要 Critic → GRPO 用组内均值 → 全失败时失效
+Lesson 06: 冷启动提高成功率 → 路径依赖 → OPD 在 RL 后仍有用</code></pre>
+
+<h2>推荐阅读</h2>
+<p><a href="https://z.ai/blog/glm-5.2">GLM-5.2 技术博客</a> — 现在你有足够基础读懂其中关于 critic-based PPO 和 OPD 的段落了。重点看 "Long-Horizon Agent RL" 和 "On-Policy Distillation" 这两部分。</p>
+
+<div class="ask-teacher">
+<strong>💬 有疑问？</strong> 这六课的任何内容都可以继续深入。如果你想动手实践，我可以设计一个用 TRL 库跑 GRPO 训练的实操课。
+</div>
+
+<div class="nav-links">
+<a href="0005-grpo.html">← 上一课：GRPO</a>
+<span>🎓 基础课程完成</span>
+</div>
+
+</body>
+</html>

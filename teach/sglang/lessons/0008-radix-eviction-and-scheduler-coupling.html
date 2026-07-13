@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第八课：Radix eviction 与 Scheduler 耦合</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script defer src="../assets/quiz.js"></script>
+</head>
+<body>
+<h1>Radix eviction 与 Scheduler 耦合</h1>
+<p class="outcome">学完本课，你能从 free、evictable、protected 三个数字推导一次 admission 或 decode allocation 会先驱逐哪些节点、何时转为 retraction。</p>
+
+<h2>显存账本有三种 ownership</h2>
+<table>
+<thead><tr><th>状态</th><th>含义</th><th>是否可立即分配</th></tr></thead>
+<tbody>
+<tr><td>Free</td><td>allocator 当前持有的空 slots</td><td>可以</td></tr>
+<tr><td>Evictable</td><td>Radix Tree 持有且 <code>lock_ref=0</code></td><td>先驱逐后可以</td></tr>
+<tr><td>Protected</td><td>活跃 request 的 prefix path 正在引用</td><td>不可以</td></tr>
+</tbody>
+</table>
+<p>Scheduler admission 使用 <code>free + evictable</code> 估计可回收容量；allocator 真正分配时若 free 不足，再调用 tree eviction 把承诺兑现。Protected 不参与这笔预算。<span class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/managers/schedule_policy.py#L550-L625">schedule_policy.py:550-625</a> 与 <a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/mem_cache/common.py#L235-L285">mem_cache/common.py:235-285</a>。</span></p>
+
+<h2>Eviction 只能从未锁定叶子开始</h2>
+<pre><code>1. 收集 evictable leaves
+2. 按配置的 eviction strategy 排优先级
+3. 弹出一个 lock_ref=0 的 leaf
+4. allocator.free(leaf.value)
+5. 删除 leaf
+6. 父节点若变成未锁定 leaf，再加入候选
+7. 达到目标 token 数或无候选时停止</code></pre>
+<p>从叶子向上删才能保持共享 prefix 完整。如果一个叶子被锁定，它的所有 ancestors 也因 root-path lock 而受保护；算法不会越过活跃引用删除父 segment。<span class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/mem_cache/radix_cache.py#L563-L591">radix_cache.py:563-591</a>。</span></p>
+
+<h2>Finish 与 chunk 让账本重新归一</h2>
+<p><code>cache_finished_req</code> 把 committed、page-aligned KV 插入树，释放与已有 canonical prefix 重复的 slots，再释放不对齐 tail 和 prefix lock。<code>cache_unfinished_req</code> 用于 chunked request：插入后重新 match，把 request row 中相关位置改写为 canonical tree indices，避免 request 继续指向已释放的副本。</p>
+<pre><code>request-private indices: [301, 302, 303, 304]
+tree canonical indices:  [101, 102, 303, 304]
+insert + rematch
+request row rewritten:   [101, 102, 303, 304]
+free duplicates:         [301, 302]</code></pre>
+<p class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/mem_cache/radix_cache.py#L437-L542">radix_cache.py:437-542</a>。</p>
+
+<h2>与 Scheduler 的完整压力路径</h2>
+<pre><code>prefill admission:
+  free + evictable - reservations → admit or stop
+
+extend allocation:
+  free insufficient → evict leaves → allocate or fail loudly
+
+decode preparation:
+  estimate next slots → evict leaves
+  still insufficient → retract running requests
+  last request still impossible → explicit abort</code></pre>
+<div class="invariant"><strong>Cache hit rate 与可调度容量互相制约</strong>锁住更多热门 prefix 可减少 prefill compute，但会降低 evictable headroom。优化不能只追 cache hit；要同时观察 retraction、TTFT、ITL 和有效 token throughput。</div>
+
+<h2>最小自检</h2>
+<div class="quiz" data-answer="1">
+<h3>free 为 80、evictable 为 50、protected 为 500，本次需 120 slots。标准路径先做什么？</h3>
+<label><input type="radio" name="q8" value="1">驱逐至少四十 slots</label>
+<label><input type="radio" name="q8" value="2">释放五百保护 slots</label>
+<label><input type="radio" name="q8" value="3">撤回全部运行 requests</label>
+<label><input type="radio" name="q8" value="4">扩大物理显存 pool</label>
+<div class="feedback correct" aria-live="polite">正确。可承诺容量为 130，先从 evictable leaves 回收至少 40，使 allocator free 达到 120。</div>
+<div class="feedback incorrect" aria-live="polite">不对。Protected 不能驱逐。因为 free 加 evictable 足够，先从未锁定 leaves 回收缺少的 40 slots。</div>
+</div>
+</body>
+</html>

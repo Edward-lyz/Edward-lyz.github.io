@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Lesson 01: MiniMax M3 整体架构与数据流</title>
+<style>
+  body { font-family: 'Palatino Linotype', 'Book Antiqua', Palatino, serif; max-width: 900px; margin: 2em auto; padding: 0 1.5em; color: #333; line-height: 1.7; }
+  h1 { font-size: 1.8em; border-bottom: 2px solid #333; padding-bottom: 0.3em; }
+  h2 { font-size: 1.3em; margin-top: 2em; color: #555; }
+  h3 { font-size: 1.1em; margin-top: 1.5em; }
+  .mermaid { background: #fafafa; border: 1px solid #ddd; border-radius: 4px; padding: 1em; margin: 1.5em 0; }
+  table { border-collapse: collapse; margin: 1em 0; width: 100%; }
+  th, td { border: 1px solid #ccc; padding: 0.5em 0.8em; text-align: left; }
+  th { background: #f5f5f5; }
+  .key-insight { background: #fffde7; border-left: 4px solid #f9a825; padding: 0.8em 1em; margin: 1em 0; }
+  .citation { font-size: 0.85em; color: #666; }
+  code { background: #f0f0f0; padding: 0.15em 0.4em; border-radius: 3px; font-size: 0.9em; }
+  .param { font-family: monospace; color: #d32f2f; }
+  .footer { margin-top: 3em; padding-top: 1em; border-top: 1px solid #ddd; font-size: 0.9em; color: #666; }
+  .nav { font-size: 0.85em; color: #888; margin-bottom: 2em; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+</head>
+<body>
+
+<div class="nav">Lesson 01 · MiniMax M3 Architecture</div>
+
+<h1>MiniMax M3: 整体架构与计算流程</h1>
+
+<p>MiniMax M3 是一个 ~428B 总参数、~23B 激活参数的原生多模态 MoE 模型，支持 1M token context。本课聚焦其 text backbone 的算法架构。</p>
+
+<h2>1. 顶层结构</h2>
+
+<div class="mermaid">
+graph TD
+    subgraph Input
+        A[Token IDs] --> B[Embedding<br/>vocab=200064, dim=6144]
+    end
+
+    subgraph "60 Decoder Layers"
+        B --> C[Layer 0-2: Dense Layers]
+        C --> D[Layer 3-59: Sparse Layers<br/>MoE + MSA]
+    end
+
+    D --> E[RMSNorm]
+    E --> F[LM Head → logits]
+
+    subgraph "Vision Path (optional)"
+        G[Image/Video] --> H[CLIP ViT-L<br/>patch=14, 32 layers]
+        H --> I[Patch Merge<br/>spatial 2×2, temporal 2]
+        I --> J[MLP Projector<br/>→ dim 6144]
+        J --> B
+    end
+</div>
+
+<h2>2. 关键超参数</h2>
+
+<table>
+<tr><th>参数</th><th>值</th><th>说明</th></tr>
+<tr><td><span class="param">hidden_size</span></td><td>6144</td><td>隐藏维度</td></tr>
+<tr><td><span class="param">num_hidden_layers</span></td><td>60</td><td>3 dense + 57 MoE</td></tr>
+<tr><td><span class="param">num_attention_heads</span></td><td>64</td><td>Q heads</td></tr>
+<tr><td><span class="param">num_key_value_heads</span></td><td>4</td><td>GQA, ratio=16:1</td></tr>
+<tr><td><span class="param">head_dim</span></td><td>128</td><td></td></tr>
+<tr><td><span class="param">rotary_dim</span></td><td>64</td><td>Partial RoPE: 仅前 50% 维度应用旋转</td></tr>
+<tr><td><span class="param">rope_theta</span></td><td>5,000,000</td><td>高 base → 长 context 外推</td></tr>
+<tr><td><span class="param">num_local_experts</span></td><td>128</td><td>每层 128 个 routed expert</td></tr>
+<tr><td><span class="param">num_experts_per_tok</span></td><td>4</td><td>Top-4 routing</td></tr>
+<tr><td><span class="param">n_shared_experts</span></td><td>1</td><td>1 个 always-on shared expert</td></tr>
+<tr><td><span class="param">intermediate_size</span></td><td>3072</td><td>每个 routed expert 的 FFN 中间维度</td></tr>
+<tr><td><span class="param">shared_intermediate_size</span></td><td>3072</td><td>shared expert 中间维度</td></tr>
+<tr><td><span class="param">dense_intermediate_size</span></td><td>12288</td><td>Dense 层 (0-2) 的 FFN 中间维度</td></tr>
+<tr><td><span class="param">max_position_embeddings</span></td><td>1,048,576</td><td>1M context</td></tr>
+</table>
+
+<div class="key-insight">
+<strong>激活参数估算：</strong>每个 token 激活 4 个 routed expert (4×3072×2 + 6144 参数的 up/down) + 1 shared expert + attention。总激活 ≈ 23B，远小于 428B 总参数。
+</div>
+
+<h2>3. 单层 Decoder Layer 数据流</h2>
+
+<h3>3.1 Dense Layer (Layer 0-2)</h3>
+
+<div class="mermaid">
+graph LR
+    X[x] --> LN1[RMSNorm]
+    LN1 --> ATTN["GQA Attention<br/>(full, 无 sparse)"]
+    ATTN --> ADD1((+))
+    X --> ADD1
+    ADD1 --> LN2[RMSNorm]
+    LN2 --> FFN["SwiGLU FFN<br/>dim=12288"]
+    FFN --> ADD2((+))
+    ADD1 --> ADD2
+    ADD2 --> OUT[output]
+</div>
+
+<h3>3.2 Sparse Layer (Layer 3-59)</h3>
+
+<div class="mermaid">
+graph LR
+    X[x] --> LN1[RMSNorm]
+    LN1 --> ATTN["MSA Sparse Attention<br/>(Index Branch + Main Branch)"]
+    ATTN --> ADD1((+))
+    X --> ADD1
+    ADD1 --> LN2[RMSNorm]
+    LN2 --> MOE["MoE Block<br/>128 experts, top-4 + 1 shared"]
+    MOE --> ADD2((+))
+    ADD1 --> ADD2
+    ADD2 --> OUT[output]
+</div>
+
+<h2>4. Attention 算法详解</h2>
+
+<h3>4.1 基础 GQA 结构</h3>
+
+<p>所有 60 层共享相同的 attention 投影结构：</p>
+
+<div class="mermaid">
+graph TD
+    H["hidden (B, L, 6144)"] --> QP["Q Proj → (B, L, 64, 128)"]
+    H --> KP["K Proj → (B, L, 4, 128)"]
+    H --> VP["V Proj → (B, L, 4, 128)"]
+
+    QP --> QN["Q Norm (per-head RMS)"]
+    KP --> KN["K Norm (per-head RMS)"]
+
+    QN --> ROPE["Partial RoPE<br/>仅 dim[:64] 旋转"]
+    KN --> ROPE
+
+    ROPE --> ATT{"Layer 0-2: Full Attention<br/>Layer 3-59: MSA Sparse"}
+    VP --> ATT
+
+    ATT --> OP["O Proj → (B, L, 6144)"]
+</div>
+
+<div class="key-insight">
+<strong>Partial RoPE：</strong>head_dim=128 中仅前 64 维施加旋转位置编码，后 64 维不编码位置。这种设计让模型同时拥有位置敏感特征和位置无关特征，有助于长 context 泛化。
+<br/><span class="citation">[config.json: partial_rotary_factor=0.5, rotary_dim=64]</span>
+</div>
+
+<h3>4.2 MiniMax Sparse Attention (MSA) — 核心创新</h3>
+
+<p>MSA 的核心思想：在 GQA 基础上，为每个 KV group 独立选择 top-k 个 KV block 做精确注意力，跳过不重要的 block。</p>
+
+<div class="mermaid">
+graph TD
+    subgraph "Index Branch (轻量级, 独立权重)"
+        IQ["Index Q Proj<br/>hidden → (4 heads, 128 dim)"]
+        IK["Index K Proj<br/>hidden → (1, 128 dim)"]
+        IQ --> IQN[Index Q Norm]
+        IK --> IKN[Index K Norm]
+        IQN --> ROPE2["RoPE + Hadamard"]
+        IKN --> ROPE2
+        ROPE2 --> SCORE["Block Score:<br/>per-block max(Q·K) over tokens"]
+        SCORE --> TOPK["Top-k Selection<br/>k=16 blocks per group"]
+    end
+
+    subgraph "Main Branch (原始 GQA)"
+        Q["Q (64 heads)"] --> SPARSE_ATT
+        K["K (4 heads)"] --> SPARSE_ATT
+        V["V (4 heads)"] --> SPARSE_ATT
+        TOPK --> |"selected block indices"| SPARSE_ATT["Block-Sparse Attention<br/>仅对选中的 16 blocks 计算"]
+    end
+
+    SPARSE_ATT --> OUT["Attention Output"]
+</div>
+
+<div class="key-insight">
+<strong>MSA 算法步骤：</strong>
+<ol>
+<li><strong>Index Branch 计算 block scores：</strong>用独立的小 Q/K 投影（4 heads × 128 dim）计算每个 KV block 的重要性分数。Score 取 block 内所有 token 的 Q·K 点积的 max。</li>
+<li><strong>Top-k 选择：</strong>每个 GQA group 独立选 top-16 个 block（block_size=128 tokens）。加上 1 个 local block（当前位置附近）。</li>
+<li><strong>Main Branch 稀疏注意力：</strong>原始的 64 头 Q 仅对选中的 16+1 个 block（共 ~2176 tokens）做精确 softmax attention，跳过其余 block。</li>
+</ol>
+<p>在 1M context 下，每个 token 只需关注 ~2176/1M ≈ 0.2% 的 KV，compute 降低约 <strong>28.4×</strong>。</p>
+<span class="citation">[arXiv:2606.13392, sparse_topk_blocks=16, sparse_block_size=128, sparse_local_block=1]</span>
+</div>
+
+<h3>4.3 Index Branch 的设计细节</h3>
+
+<table>
+<tr><th>参数</th><th>值</th><th>含义</th></tr>
+<tr><td><span class="param">sparse_num_index_heads</span></td><td>4</td><td>Index Branch 的 Q head 数（= KV head 数）</td></tr>
+<tr><td><span class="param">sparse_index_dim</span></td><td>128</td><td>Index Q/K 的 head dim</td></tr>
+<tr><td><span class="param">sparse_topk_blocks</span></td><td>16</td><td>每个 group 选的 block 数</td></tr>
+<tr><td><span class="param">sparse_block_size</span></td><td>128</td><td>每个 block 包含的 token 数</td></tr>
+<tr><td><span class="param">sparse_local_block</span></td><td>1</td><td>always attend 的 local block 数</td></tr>
+<tr><td><span class="param">sparse_score_type</span></td><td>max</td><td>block score = block 内 Q·K 的 max</td></tr>
+<tr><td><span class="param">sparse_init_block</span></td><td>0</td><td>是否强制 attend 第一个 block</td></tr>
+</table>
+
+<p>从权重结构可以验证 Index Branch 的存在：</p>
+<pre><code>self_attn.index_q_proj.weight   # (512, 6144) = 4 heads × 128 dim ← hidden
+self_attn.index_k_proj.weight   # (128, 6144) = 1 head × 128 dim ← hidden  
+self_attn.index_q_norm.weight   # (128,)
+self_attn.index_k_norm.weight   # (128,)</code></pre>
+
+<p>注意：Index K 只有 1 个 head（所有 4 个 Index Q heads 共享同一个 K），这进一步降低了 Index Branch 的计算量。</p>
+
+<h2>5. MoE Block 算法</h2>
+
+<div class="mermaid">
+graph TD
+    X["input (B, L, 6144)"] --> GATE["Gate Proj → (B, L, 128)<br/>dtype=float32"]
+    GATE --> SIG["Sigmoid Scoring<br/>(not softmax)"]
+    SIG --> BIAS["+ e_score_correction_bias"]
+    BIAS --> TOP4["Top-4 Selection"]
+    TOP4 --> |"expert ids + weights"| ROUTE
+
+    X --> ROUTE["Routed Dispatch"]
+    ROUTE --> EXP["4 Selected Experts<br/>each: SwiGLU(6144→3072→6144)"]
+    EXP --> |"weighted sum"| MERGE
+
+    X --> SHARED["Shared Expert<br/>SwiGLU(6144→3072→6144)"]
+    SHARED --> MERGE["Sum"]
+    MERGE --> OUT["output (B, L, 6144)"]
+</div>
+
+<div class="key-insight">
+<strong>MoE 设计要点：</strong>
+<ul>
+<li><strong>Sigmoid scoring（非 softmax）：</strong>gate logits 过 sigmoid 而非 softmax，每个 expert 的得分独立，不互相抑制。这允许多个 expert 同时获得高分。<span class="citation">[config: scoring_func=sigmoid]</span></li>
+<li><strong>Bias correction：</strong>每个 expert 有一个可学习 bias（<code>e_score_correction_bias</code>），调节 expert 的被选概率，平衡 load。<span class="citation">[config: use_routing_bias=true]</span></li>
+<li><strong>Routed scaling factor = 2.0：</strong>routed experts 的输出乘以 2.0，补偿稀疏激活带来的幅度缩减。<span class="citation">[config: routed_scaling_factor=2.0]</span></li>
+<li><strong>Shared expert always on：</strong>1 个共享 expert 处理所有 token，确保基线表达能力。</li>
+</ul>
+</div>
+
+<h2>6. 激活函数: SwiGLU with Clamp</h2>
+
+<p>M3 使用 <code>swigluoai</code> 变体：</p>
+
+<pre><code>SwiGLU(x) = SiLU(x·W_gate) ⊙ (x·W_up)
+# 但加了 clamp:
+output = clamp(SwiGLU(x), -swiglu_limit, +swiglu_limit)
+# swiglu_limit = 7.0, swiglu_alpha = 1.702</code></pre>
+
+<p>Clamp 防止极端激活值在深层累积，稳定训练。alpha=1.702 是 SiLU 的缩放系数（GELU 近似中常见）。</p>
+
+<h2>7. MTP (Multi-Token Prediction)</h2>
+
+<p>Config 中声明 <code>num_mtp_modules=7, num_nextn_predict_layers=1</code>，但发布的权重中不含 MTP 模块参数。这意味着：</p>
+<ul>
+<li>MTP 仅用于训练阶段的辅助 loss（预测未来 7 个 token）</li>
+<li>推理时不加载 MTP head，仅用标准 autoregressive decoding</li>
+<li>或者 MTP 被用于 speculative decoding 的 draft model，但作为独立部署</li>
+</ul>
+
+<h2>8. 端到端 Forward Pass 总结</h2>
+
+<div class="mermaid">
+graph TD
+    A["Input Token IDs (B, L)"] --> B["Embedding Lookup<br/>(B, L, 6144)"]
+    B --> L0["Layer 0: RMSNorm → Full GQA Attn → RMSNorm → Dense FFN(12288)"]
+    L0 --> L1["Layer 1: 同上"]
+    L1 --> L2["Layer 2: 同上"]
+    L2 --> L3["Layer 3: RMSNorm → MSA Sparse Attn → RMSNorm → MoE(128E, top4+shared)"]
+    L3 --> DOTS["..."]
+    DOTS --> L59["Layer 59: 同上"]
+    L59 --> NORM["Final RMSNorm"]
+    NORM --> LM["LM Head (6144 → 200064)"]
+    LM --> LOGITS["Logits"]
+</div>
+
+<h2>9. 与 DeepSeek-V3 的对比（预览）</h2>
+
+<table>
+<tr><th>维度</th><th>MiniMax M3</th><th>DeepSeek-V3</th></tr>
+<tr><td>总参数</td><td>~428B</td><td>~671B</td></tr>
+<tr><td>激活参数</td><td>~23B</td><td>~37B</td></tr>
+<tr><td>Attention</td><td>GQA(64Q/4KV) + MSA Sparse</td><td>MLA (latent compression)</td></tr>
+<tr><td>长 context 方案</td><td>Block-sparse top-k attention</td><td>无原生稀疏（靠 YaRN/长训练）</td></tr>
+<tr><td>MoE routing</td><td>Sigmoid + bias, top-4</td><td>Sigmoid + bias, top-8 (per token)</td></tr>
+<tr><td>Shared expert</td><td>1 个</td><td>1 个</td></tr>
+<tr><td>Expert 数</td><td>128</td><td>256</td></tr>
+<tr><td>位置编码</td><td>Partial RoPE (50%)</td><td>RoPE on compressed latent</td></tr>
+</table>
+
+<div class="footer">
+<p><strong>推荐阅读：</strong><a href="https://arxiv.org/abs/2606.13392">arXiv:2606.13392 — MiniMax Sparse Attention</a>（全文深入 MSA 的数学推导和实验）</p>
+<p><strong>下一课：</strong>MSA 的完整数学推导 — block scoring 的信息论动机、top-k 选择的近似误差分析。</p>
+<p><em>有任何不清楚的地方，随时向 agent 提问。</em></p>
+</div>
+
+</body>
+</html>

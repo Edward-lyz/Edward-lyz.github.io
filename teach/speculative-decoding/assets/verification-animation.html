@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Target Verification 动画演示</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: #1a1a2e;
+  color: #eee;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 1.5rem 1rem;
+}
+h1 { font-size: 1.3rem; margin-bottom: 0.3rem; }
+.subtitle { color: #8892b0; font-size: 0.8rem; margin-bottom: 1rem; }
+
+.stage {
+  width: 100%;
+  aspect-ratio: 2.3 / 1;
+  background: #0f0f23;
+  border-radius: 10px;
+  border: 1px solid #333;
+  position: relative;
+  overflow: hidden;
+}
+
+.token {
+  position: absolute;
+  padding: 0.35em 0.6em;
+  border-radius: 5px;
+  font-size: clamp(0.5rem, 1.1vw, 0.75rem);
+  font-weight: 600;
+  white-space: nowrap;
+  transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+  opacity: 0;
+  transform: scale(0.8);
+}
+.token.visible { opacity: 1; transform: scale(1); }
+.token.anchor { background: #16a34a; color: white; }
+.token.draft { background: #7c3aed; color: white; }
+.token.accepted { background: #16a34a; color: white; }
+.token.rejected { background: #dc2626; color: white; text-decoration: line-through; }
+.token.resample { background: #0891b2; color: white; }
+.token.bonus { background: #eab308; color: #1a1a2e; }
+.token.target { background: #2563eb; color: white; }
+
+.prob {
+  position: absolute;
+  font-size: clamp(0.45rem, 0.95vw, 0.65rem);
+  color: #94a3b8;
+  transition: all 0.5s ease;
+  opacity: 0;
+  white-space: nowrap;
+}
+.prob.visible { opacity: 1; }
+.prob.highlight-q { color: #c4b5fd; font-weight: 700; }
+.prob.highlight-p { color: #93c5fd; font-weight: 700; }
+
+.ratio-box {
+  position: absolute;
+  padding: 0.3em 0.6em;
+  border-radius: 5px;
+  font-size: clamp(0.5rem, 1vw, 0.7rem);
+  font-weight: 700;
+  background: #1e293b;
+  border: 1px solid #475569;
+  color: #fbbf24;
+  transition: all 0.5s ease;
+  opacity: 0;
+  white-space: nowrap;
+}
+.ratio-box.visible { opacity: 1; }
+
+.bar-container {
+  position: absolute;
+  height: 10px;
+  border-radius: 5px;
+  transition: all 0.5s ease;
+  opacity: 0;
+}
+.bar-container.visible { opacity: 1; }
+.bar-q { background: #7c3aed; }
+.bar-p { background: #2563eb; }
+.bar-residual { background: #0891b2; }
+
+.region {
+  position: absolute;
+  border-radius: 7px;
+  border: 1px solid;
+  transition: all 0.5s ease;
+  opacity: 0;
+}
+.region.visible { opacity: 1; }
+.region.target { border-color: #2563eb; background: rgba(37,99,235,0.08); }
+.region.residual { border-color: #0891b2; background: rgba(8,145,178,0.12); }
+
+.region-label {
+  position: absolute;
+  font-size: clamp(0.45rem, 0.9vw, 0.6rem);
+  color: #8892b0;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  transition: opacity 0.5s ease;
+  opacity: 0;
+}
+.region-label.visible { opacity: 1; }
+
+.desc {
+  width: 100%;
+  margin-top: 0.8rem;
+  padding: 0.8rem 1rem;
+  background: #16213e;
+  border-radius: 8px;
+  min-height: 70px;
+  font-size: clamp(0.72rem, 1.3vw, 0.88rem);
+  line-height: 1.6;
+  color: #ccd6f6;
+}
+.desc strong { color: #64ffda; }
+.desc .q { color: #c4b5fd; font-weight: 700; }
+.desc .p { color: #93c5fd; font-weight: 700; }
+.desc .r { color: #fbbf24; font-weight: 700; }
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  margin-top: 0.8rem;
+  width: 100%;
+}
+.controls button {
+  padding: 0.4rem 1.2rem;
+  border: 1px solid #64ffda;
+  background: transparent;
+  color: #64ffda;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  transition: all 0.2s;
+}
+.controls button:hover:not(:disabled) { background: #64ffda; color: #0f0f23; }
+.controls button:disabled { opacity: 0.3; cursor: not-allowed; }
+.controls .progress { color: #8892b0; font-size: 0.75rem; margin-left: auto; }
+</style>
+</head>
+<body>
+
+<h1>Target Verification：Rejection Sampling</h1>
+<p class="subtitle">点击「下一步」逐 token 观察校验、拒绝与 bonus 机制</p>
+
+<div class="stage" id="stage"></div>
+<div class="desc" id="desc"></div>
+<div class="controls">
+  <button type="button" id="prevBtn">← 上一步</button>
+  <button type="button" id="nextBtn">下一步 →</button>
+  <span class="progress" id="progress"></span>
+  <button type="button" id="resetBtn" style="border-color:#8892b0; color:#8892b0;">重置</button>
+</div>
+
+<script>
+const stage = document.getElementById('stage');
+const desc = document.getElementById('desc');
+const prevBtn = document.getElementById('prevBtn');
+const nextBtn = document.getElementById('nextBtn');
+const resetBtn = document.getElementById('resetBtn');
+const progress = document.getElementById('progress');
+
+let currentStep = -1;
+const elements = {};
+
+function el(id, cls, text, xPct, yPct) {
+  const d = document.createElement('div');
+  d.className = 'token ' + cls;
+  d.textContent = text;
+  d.style.left = xPct + '%';
+  d.style.top = yPct + '%';
+  stage.appendChild(d);
+  elements[id] = d;
+}
+function prob(id, text, xPct, yPct) {
+  const d = document.createElement('div');
+  d.className = 'prob';
+  d.textContent = text;
+  d.style.left = xPct + '%';
+  d.style.top = yPct + '%';
+  stage.appendChild(d);
+  elements[id] = d;
+}
+function region(id, cls, xPct, yPct, wPct, hPct) {
+  const d = document.createElement('div');
+  d.className = 'region ' + cls;
+  d.style.left = xPct + '%';
+  d.style.top = yPct + '%';
+  d.style.width = wPct + '%';
+  d.style.height = hPct + '%';
+  stage.appendChild(d);
+  elements[id] = d;
+}
+function label(id, text, xPct, yPct) {
+  const d = document.createElement('div');
+  d.className = 'region-label';
+  d.textContent = text;
+  d.style.left = xPct + '%';
+  d.style.top = yPct + '%';
+  stage.appendChild(d);
+  elements[id] = d;
+}
+function ratioBox(id, text, xPct, yPct) {
+  const d = document.createElement('div');
+  d.className = 'ratio-box';
+  d.textContent = text;
+  d.style.left = xPct + '%';
+  d.style.top = yPct + '%';
+  stage.appendChild(d);
+  elements[id] = d;
+}
+function show() { for (let i = 0; i < arguments.length; i++) { const e = elements[arguments[i]]; if (e) e.classList.add('visible'); } }
+function hide() { for (let i = 0; i < arguments.length; i++) { const e = elements[arguments[i]]; if (e) e.classList.remove('visible'); } }
+function restyle(id, cls) { if (elements[id]) elements[id].className = 'token ' + cls + ' visible'; }
+function setText(id, t) { if (elements[id]) elements[id].textContent = t; }
+function addCls(id, c) { if (elements[id]) elements[id].classList.add(c); }
+
+// 三个 draft token 在 18%, 40%, 62%
+// 对应 target 分布 p1,p2,p3 在同列下方；p4(bonus) 在 84%
+function buildScene() {
+  stage.innerHTML = '';
+  for (const k in elements) delete elements[k];
+
+  // Context anchor
+  el('anchor', 'anchor', 'x₀="The"', 2, 8);
+  label('lbl-draft', 'DRAFT BLOCK (来自 drafter)', 2, 22);
+  label('lbl-target', 'TARGET 一次前传 (并行验证)', 2, 50);
+  label('lbl-result', '本轮产出', 2, 80);
+
+  // Draft tokens
+  el('x1', 'draft', 'x̃₁="cat"', 18, 26);
+  el('x2', 'draft', 'x̃₂="sat"', 40, 26);
+  el('x3', 'draft', 'x̃₃="on"', 62, 26);
+
+  // Draft probs q_k(x̃_k)
+  prob('q1', 'q₁(cat)=0.60', 16, 35);
+  prob('q2', 'q₂(sat)=0.70', 38, 35);
+  prob('q3', 'q₃(on)=0.65', 60, 35);
+
+  // Target distributions (验证用)
+  el('p1', 'target', 'p₁(·)', 18, 56);
+  el('p2', 'target', 'p₂(·)', 40, 56);
+  el('p3', 'target', 'p₃(·)', 62, 56);
+  el('p4', 'target', 'p₄(·)', 84, 56);
+
+  // Target probs for the drafted token
+  prob('p1v', 'p₁(cat)=0.54', 16, 65);
+  prob('p2v', 'p₂(sat)=0.28', 38, 65);
+  prob('p3v', 'p₃(on)=0.60', 60, 65);
+  prob('p4v', '→ bonus 来源', 80, 65);
+
+  // Ratio boxes
+  ratioBox('r1', 'r₁=min(1, 0.54/0.60)=0.90', 14, 70);
+  ratioBox('r2', 'r₂=min(1, 0.28/0.70)=0.40', 36, 70);
+  ratioBox('r3', 'r₃=min(1, 0.60/0.65)=0.92', 58, 70);
+
+  // Residual region (for reject case)
+  region('res', 'residual', 34, 68, 20, 12);
+  ratioBox('resInfo', 'residual = norm(max(0, p₂−q₂))', 33, 82);
+
+  // Result tokens
+  el('out1', 'accepted', '✓ cat', 18, 86);
+  el('out2', 'resample', "x'='dog'", 40, 86);
+  el('bonus', 'bonus', 'bonus token', 84, 86);
+}
+
+const steps = [
+  {
+    action() { show('anchor', 'lbl-draft', 'x1', 'x2', 'x3', 'q1', 'q2', 'q3'); },
+    desc: '<strong>Step 1 — Draft block 就绪</strong>：drafter 已生成 3 个候选 token x̃₁x̃₂x̃₃，附带提议分布 <span class="q">q</span>。注意 q 是 drafter 自己的信念，可能与 target 的真实分布 <span class="p">p</span> 不一致——这就是需要校验的原因。'
+  },
+  {
+    action() { show('lbl-target', 'p1', 'p2', 'p3', 'p4', 'p1v', 'p2v', 'p3v', 'p4v'); },
+    desc: '<strong>Step 2 — Target 一次前传</strong>：把 [x₀, x̃₁, x̃₂, x̃₃] 一起送入 target model，<strong>并行</strong>算出 4 个 next-token 分布 p₁p₂p₃p₄。p₁验证 x̃₁、p₂验证 x̃₂、p₃验证 x̃₃，p₄是 bonus 的潜在来源。一次前传验证 3 个 token，这就是加速的关键。'
+  },
+  {
+    action() { show('r1'); addCls('q1','highlight-q'); addCls('p1v','highlight-p'); },
+    desc: '<strong>Step 3 — 校验 x̃₁</strong>：比较 <span class="q">q₁(cat)=0.60</span> 与 <span class="p">p₁(cat)=0.54</span>。target 认为 "cat" 概率 0.54，drafter 提议概率 0.60。<span class="r">r₁ = min(1, p/q) = 0.90</span>。接受概率 90%。'
+  },
+  {
+    action() { restyle('x1','accepted'); setText('x1','✓ x̃₁'); show('out1'); },
+    desc: '<strong>Step 4 — x̃₁ 被接受</strong>：采样 u~Uniform(0,1)，假设 u=0.3 ≤ 0.90 → 接受 "cat"。第一个 token 确认。继续校验下一个。'
+  },
+  {
+    action() { show('r2'); addCls('q2','highlight-q'); addCls('p2v','highlight-p'); },
+    desc: '<strong>Step 5 — 校验 x̃₂</strong>：比较 <span class="q">q₂(sat)=0.70</span> 与 <span class="p">p₂(sat)=0.28</span>。target 认为 "sat" 概率只有 0.28，drafter 却给了 0.70——drafter 高估了。<span class="r">r₂ = min(1, 0.28/0.70) = 0.40</span>。接受概率仅 40%。'
+  },
+  {
+    action() { restyle('x2','rejected'); setText('x2','✗ x̃₂'); },
+    desc: '<strong>Step 6 — x̃₂ 被拒绝</strong>：采样 u=0.7 > 0.40 → 拒绝 "sat"。<strong>关键：一旦某位置被拒，其后的 x̃₃ 直接作废</strong>——因为 x̃₃ 是基于 "sat" 生成的，前提已不成立。本轮就此截断。'
+  },
+  {
+    action() { show('res','resInfo'); hide('r2'); },
+    desc: '<strong>Step 7 — 拒绝后 resample</strong>：不是直接用 p₂，而是从 <strong>残差分布</strong> resample：p′(x) ∝ max(0, p₂(x) − q₂(x))。直觉：q 已经"用掉"的那部分概率被扣除，只从 target 比 draft 多出来的部分采。对 "sat"：max(0, 0.28−0.70)=0，被完全排除；对 "dog"：p₂=0.45, q₂=0.05, residual=0.40 → 被采中。'
+  },
+  {
+    action() { show('out2'); hide('x3','q3'); },
+    desc: "<strong>Step 8 — 修正 token 产出</strong>：从残差分布采样得到 x'='dog'。本轮最终产出 [cat, dog]——2 个 token（1 个接受 + 1 个 resample）。'dog' 成为下一轮的 anchor x₀。注意：resample 保证了 lossless（下节证明）。"
+  },
+  {
+    action() { hide('res','resInfo','out2','r1','r2'); 
+               restyle('x2','accepted'); setText('x2','✓ x̃₂'); show('x3','q3'); 
+               show('r3'); },
+    desc: '<strong>Step 9 — 对比：若 x̃₂ 也被接受</strong>（假设 u=0.2 ≤ 0.40）。则继续校验 x̃₃：r₃=min(1, 0.60/0.65)=0.92 → 接受。3 个 draft 全部接受。'
+  },
+  {
+    action() { restyle('x3','accepted'); setText('x3','✓ x̃₃'); show('bonus'); },
+    desc: '<strong>Step 10 — 全接受 → Bonus token</strong>：3 个 draft 全接受时，target 前传<strong>已经顺便算出了 p₄</strong>（验证 x̃₃ 时位置 3 的 next-token 分布）。直接从 p₄ 采样一个 bonus token，<strong>无需额外前传</strong>。这是"免费"的——每轮至少产出 1 个 token 的来源。'
+  },
+  {
+    action() {},
+    desc: '<strong>Step 11 — Lossless 保证</strong>：无论走哪条路，最终产出分布都精确等于 target 分布 p。① 接受路径：q·min(1,p/q) = min(p,q)；② 拒绝路径：从残差 max(0,p−q) 采样。两者相加 = min(p,q) + max(0,p−q) = p（分情况可验证）。下一节逐步证明。'
+  },
+];
+
+function applyStep(idx) {
+  buildScene();
+  for (let i = 0; i <= idx; i++) steps[i].action();
+  desc.innerHTML = steps[idx].desc;
+  progress.textContent = (idx + 1) + ' / ' + steps.length;
+  prevBtn.disabled = idx <= 0;
+  nextBtn.disabled = idx >= steps.length - 1;
+}
+function reset() {
+  currentStep = -1;
+  buildScene();
+  desc.innerHTML = '点击「下一步」开始动画演示。主线展示「拒绝+resample」，Step 9-10 切换到「全接受+bonus」对比。';
+  progress.textContent = '0 / ' + steps.length;
+  prevBtn.disabled = true;
+  nextBtn.disabled = false;
+}
+
+nextBtn.addEventListener('click', () => { if (currentStep < steps.length - 1) { currentStep++; applyStep(currentStep); } });
+prevBtn.addEventListener('click', () => { if (currentStep > 0) { currentStep--; applyStep(currentStep); } });
+resetBtn.addEventListener('click', reset);
+reset();
+</script>
+</body>
+</html>

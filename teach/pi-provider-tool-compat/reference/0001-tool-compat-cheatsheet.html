@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Reference: pi 工具 / Provider 兼容速查表</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<style>
+  /* 速查表为打印优化：紧凑、可单页打印 */
+  body { font-size: 15px; max-width: 820px; }
+  h2 { margin-top: 1.8rem; }
+  table { font-size: 0.82rem; }
+  td code { font-size: 0.78em; }
+  @media print { body { font-size: 12px; } .noprint { display: none; } }
+</style>
+</head>
+<body>
+
+<h1>pi 工具 / Provider 兼容速查表</h1>
+<p class="subtitle">canonical IR · convertTools 四格式 · compat flags · Claude Code 映射 · pi v0.79.6</p>
+
+<h2>1. Canonical IR（与 provider 无关的"普通话"）</h2>
+<p>定义于 <code>@earendil-works/pi-ai/dist/types.d.ts</code>。所有上层代码只认这套类型。</p>
+<table>
+<tr><th>类型</th><th>关键字段</th></tr>
+<tr><td><code>Tool</code></td><td><code>name</code>, <code>description</code>, <code>parameters</code>(TypeBox=JSON Schema)</td></tr>
+<tr><td><code>Context</code></td><td><code>systemPrompt?</code>, <code>messages: Message[]</code>, <code>tools?: Tool[]</code></td></tr>
+<tr><td><code>ToolCall</code></td><td><code>type:"toolCall"</code>, <code>id</code>, <code>name</code>, <code>arguments</code></td></tr>
+<tr><td><code>ToolResultMessage</code></td><td><code>role:"toolResult"</code>, <code>toolCallId</code>, <code>toolName</code>, <code>content[]</code>, <code>isError</code></td></tr>
+<tr><td><code>AssistantMessage</code></td><td><code>content:(text|thinking|toolCall)[]</code>, <code>api</code>, <code>provider</code>, <code>model</code>, <code>usage</code>, <code>stopReason</code></td></tr>
+<tr><td><code>Model&lt;TApi&gt;</code></td><td><code>id</code>, <code>api</code>, <code>provider</code>, <code>baseUrl</code>, <code>reasoning</code>, <code>input[]</code>, <code>compat</code></td></tr>
+</table>
+
+<h2>2. 分发 seam（按 model.api 查表）</h2>
+<div class="formula-box">// stream.js
+stream(model, ctx, opts)  →  getApiProvider(model.api).stream(...)
+
+// 9 个内置 api（register-builtins.js）:
+anthropic-messages · openai-completions · openai-responses
+azure-openai-responses · openai-codex-responses · mistral-conversations
+google-generative-ai · google-vertex · bedrock-converse-stream
+
+// 自定义：pi.registerProvider(name, { api, baseUrl, apiKey, models, streamSimple? })</div>
+
+<h2>3. convertTools：同一份 schema，四种信封</h2>
+<table>
+<tr><th>API</th><th>wire 形状</th></tr>
+<tr><td><code>openai-completions</code></td><td><code>{type:"function", function:{name, description, parameters}}</code></td></tr>
+<tr><td><code>openai-responses</code></td><td><code>{type:"function", name, description, parameters, strict}</code></td></tr>
+<tr><td><code>anthropic-messages</code></td><td><code>{name, description, input_schema:{type:"object", properties, required}}</code></td></tr>
+<tr><td><code>google-generative-ai</code></td><td><code>{functionDeclarations:[{name, description, parametersJsonSchema}]}</code></td></tr>
+</table>
+<p class="key-insight">记忆锚点：<code>tool.parameters</code>（schema body）始终复用，差异只在外层字段名 / 嵌套层级。OpenAI=<code>function.parameters</code>，Anthropic=<code>input_schema</code>，Google=<code>parametersJsonSchema</code>。</p>
+
+<h2>4. tool result 回填格式</h2>
+<table>
+<tr><th>API</th><th>tool result 消息</th></tr>
+<tr><td><code>openai-completions</code></td><td><code>{role:"tool", tool_call_id, content}</code>（compat 要求时加 <code>name</code>）</td></tr>
+<tr><td><code>anthropic-messages</code></td><td>包进 <code>user</code> 消息：<code>{role:"user", content:[{type:"tool_result", tool_use_id, content, is_error}]}</code></td></tr>
+</table>
+
+<h2>5. compat flags（吸收 OpenAI 兼容厂商怪癖）</h2>
+<p><code>detectCompat(model)</code> 按 provider/baseUrl 自动探测，<code>model.compat</code> 显式覆盖。</p>
+<table>
+<tr><th>flag</th><th>含义</th><th>典型触发</th></tr>
+<tr><td><code>supportsDeveloperRole</code></td><td><code>developer</code> vs <code>system</code> 角色</td><td>OpenRouter / 非标准厂商 → false</td></tr>
+<tr><td><code>maxTokensField</code></td><td><code>max_completion_tokens</code> / <code>max_tokens</code></td><td>Moonshot/Together/NVIDIA → max_tokens</td></tr>
+<tr><td><code>requiresToolResultName</code></td><td>tool result 带 <code>name</code></td><td>少数代理</td></tr>
+<tr><td><code>supportsStrictMode</code></td><td>tool 定义带 <code>strict</code></td><td>Moonshot/Together/NVIDIA → false</td></tr>
+<tr><td><code>thinkingFormat</code></td><td>thinking 参数方言</td><td>deepseek / zai / qwen / together / openrouter</td></tr>
+<tr><td><code>cacheControlFormat</code></td><td>Anthropic 式 <code>cache_control</code> 标记</td><td>OpenRouter 的 anthropic/* 模型</td></tr>
+</table>
+
+<h2>6. Claude Code（OAuth token）特殊分支</h2>
+<p>触发：<code>apiKey.includes("sk-ant-oat")</code>（Claude Pro/Max 登录）。位于 <code>anthropic.js</code>。</p>
+<table>
+<tr><th>处理</th><th>细节</th></tr>
+<tr><td>身份 headers</td><td><code>user-agent: claude-cli/&lt;ver&gt;</code>, <code>x-app: cli</code>, <code>anthropic-beta: claude-code-20250219,oauth-2025-04-20</code></td></tr>
+<tr><td>强制 system</td><td>首条必须是 <code>"You are Claude Code, Anthropic's official CLI for Claude."</code></td></tr>
+<tr><td>工具名归一（出站）</td><td><code>toClaudeCodeName</code>：<code>read→Read</code>, <code>bash→Bash</code>, <code>edit→Edit</code> ...（18 个 CC 工具）</td></tr>
+<tr><td>工具名还原（入站）</td><td><code>fromClaudeCodeName</code>：<code>Read→read</code>，按你注册的工具名映射回去</td></tr>
+</table>
+
+<h2>7. 跨 provider handoff（transform-messages.js）</h2>
+<ul style="padding-left:1.4rem;">
+<li><strong>tool call ID 归一</strong>：OpenAI Responses ID（450+ 字符、含 <code>|</code>）→ 重写成 Anthropic 接受的 <code>^[a-zA-Z0-9_-]+$</code>（≤64）。</li>
+<li><strong>图像降级</strong>：目标模型 <code>input</code> 不含 <code>"image"</code> 时，图片 → <code>(image omitted: ...)</code> 占位文本。</li>
+<li><strong>thinking 块</strong>：跨模型时 redacted/带签名的 thinking 会被丢弃或转成纯文本，避免 API 报错。</li>
+</ul>
+
+<h2>8. 源码索引</h2>
+<table>
+<tr><th>文件</th><th>看什么</th></tr>
+<tr><td><code>pi-ai/dist/types.d.ts</code></td><td>canonical IR 全部类型</td></tr>
+<tr><td><code>pi-ai/dist/stream.js</code></td><td>按 api 分发的入口</td></tr>
+<tr><td><code>pi-ai/dist/api-registry.js</code></td><td>register/getApiProvider 注册表</td></tr>
+<tr><td><code>pi-ai/dist/providers/register-builtins.js</code></td><td>9 个内置 api 注册 + 懒加载</td></tr>
+<tr><td><code>pi-ai/dist/providers/openai-completions.js</code></td><td>convertTools / convertMessages / detectCompat / getCompat</td></tr>
+<tr><td><code>pi-ai/dist/providers/anthropic.js</code></td><td>convertTools(input_schema) / Claude Code 分支</td></tr>
+<tr><td><code>pi-ai/dist/providers/transform-messages.js</code></td><td>tool-call-id 归一 + 图像降级</td></tr>
+<tr><td><code>pi-agent-core/dist/agent-loop.js</code></td><td>streamSimple + validateToolArguments + execute</td></tr>
+<tr><td>pi docs <code>custom-provider.md</code> / <code>models.md</code></td><td>动手配 provider / compat 的完整参考</td></tr>
+</table>
+
+<div class="nav noprint">
+<p>回到课程：<a href="../lessons/0001-tool-provider-compat.html">一套工具定义，五种模型 API</a></p>
+</div>
+
+</body>
+</html>

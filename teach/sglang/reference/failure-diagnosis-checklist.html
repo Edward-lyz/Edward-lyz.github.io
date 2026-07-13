@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SGLang Runtime Failure Diagnosis Checklist</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<h1>SGLang Runtime Failure Diagnosis Checklist</h1>
+<p class="outcome">按 ownership 与状态边界定位 Scheduler、KV、DPA、DeepEP、HiCache 和 PD 问题，避免靠改 flags 猜测。</p>
+
+<h2>先冻结证据</h2>
+<ul>
+<li>commit、完整命令、模型 config、GPU topology 与 backend versions</li>
+<li>请求 trace：arrival、prompt/output length、shared-prefix 分布与 seed</li>
+<li>TTFT、ITL、tok/s、batch modes/token counts、retraction、cache hit</li>
+<li>free、evictable、protected、request rows 与 page size</li>
+<li>每个 collective 的 group members、local token counts 与 mode</li>
+</ul>
+
+<h2>症状到第一检查点</h2>
+<table>
+<thead><tr><th>症状</th><th>第一检查点</th><th>下一证伪动作</th></tr></thead>
+<tbody>
+<tr><td>TTFT 周期性尖峰</td><td>长 prefill chunks、L2/L3 prefetch</td><td>固定 trace，只改变 chunk 或 prefetch policy</td></tr>
+<tr><td>ITL p99 抖动</td><td>retraction、prefill/decode interleave</td><td>对齐 retraction timestamp 与 batch mode</td></tr>
+<tr><td>Waiting 不下降</td><td>request rows、input/chunk/total budget</td><td>手算第一个 waiting request</td></tr>
+<tr><td>OOM despite cache</td><td>protected 是否被误算为 evictable</td><td>核对 lock path 与 allocator free</td></tr>
+<tr><td>Cache hit 高但无收益</td><td>是否实际减少 extend tokens</td><td>比较 computed tokens 与 transfer/load-back</td></tr>
+<tr><td>DPA hang</td><td>所有 ranks 的 collective 顺序/IDLE</td><td>打印 per-rank mode 与 global token counts</td></tr>
+<tr><td>DPA imbalance</td><td>controller routing 与 token 分布</td><td>比较各 DP rank queue/KV usage</td></tr>
+<tr><td>DeepEP decode 退化</td><td>mode 是否解析为 low-latency</td><td>固定 trace 对照 auto/显式 mode</td></tr>
+<tr><td>MoE accuracy 错</td><td>global→local expert mapping、combine weights</td><td>小 batch 核对 top-k ids 与 owner</td></tr>
+<tr><td>HiCache stall</td><td>prefetch progress、host locks、min frontier</td><td>对齐各 rank completion 与 I/O queue</td></tr>
+<tr><td>PD request 卡住</td><td>bootstrap/prealloc/transfer/PREBUILT queue</td><td>按 rid 核对 destination metadata 与 poll</td></tr>
+</tbody>
+</table>
+
+<h2>Fail-fast 边界</h2>
+<ul>
+<li>Allocation 不可能满足时保留原错误；不要静默换 backend、降低断言或伪造 empty batch。</li>
+<li>Collective group 不一致时修 rank algebra；不要让某 rank 条件跳过。</li>
+<li>Transfer failure 要释放已预分配 destination 并显式 abort；不要把未到达 KV 标成 PREBUILT。</li>
+<li>Benchmark regression 要保留失败 trace；不要删除 tail 指标只报告平均值。</li>
+</ul>
+
+<h2>源码入口</h2>
+<pre><code>Scheduler admission   managers/schedule_policy.py::PrefillAdder
+Decode pressure       managers/schedule_batch.py::check_decode_mem/retract_decode
+KV allocation         mem_cache/common.py::alloc_for_extend/alloc_for_decode
+Radix accounting      mem_cache/radix_cache.py::evict/inc_lock_ref/dec_lock_ref
+DPA synchronization   managers/scheduler_components/dp_attn.py
+DeepEP stages          layers/moe/token_dispatcher/deepep.py::DeepEPDispatcher
+HiCache transfer       managers/cache_controller.py + mem_cache/hiradix_cache.py
+PD queues              disaggregation/prefill.py + disaggregation/decode.py</code></pre>
+</body>
+</html>

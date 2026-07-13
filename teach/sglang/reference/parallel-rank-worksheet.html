@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SGLang Parallel Rank Worksheet</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<h1>SGLang Parallel Rank Worksheet</h1>
+<p class="outcome">填入五个配置值，推导 Attention、MLP/MoE、request/KV 和 expert ownership。</p>
+
+<h2>输入</h2>
+<pre><code>tp_size       = ____
+pp_size       = ____
+dp_size       = ____
+attn_cp_size  = ____
+ep_size       = ____
+num_experts   = ____</code></pre>
+
+<h2>公式</h2>
+<pre><code>world_size   = tp_size × pp_size
+attn_dp_size = dp_size                    # DPA enabled
+attn_tp_size = tp_size / dp_size / attn_cp_size
+attn_tp_rank = tp_rank % attn_tp_size
+attn_cp_rank = (tp_rank / attn_tp_size) % attn_cp_size
+attn_dp_rank = tp_rank / (attn_tp_size × attn_cp_size)
+
+num_local_routed = num_global_routed / ep_size
+expert_start      = ep_rank × num_local_routed
+expert_end        = expert_start + num_local_routed</code></pre>
+
+<h2>逐 rank 填表</h2>
+<table>
+<thead><tr><th>TP rank</th><th>Attn DP</th><th>Attn CP</th><th>Attn TP</th><th>Request/KV</th><th>Expert range</th></tr></thead>
+<tbody>
+<tr><td>0</td><td>__</td><td>__</td><td>__</td><td>__</td><td>[__, __)</td></tr>
+<tr><td>1</td><td>__</td><td>__</td><td>__</td><td>__</td><td>[__, __)</td></tr>
+<tr><td>…</td><td>…</td><td>…</td><td>…</td><td>…</td><td>…</td></tr>
+</tbody>
+</table>
+
+<h2>Collective 审计</h2>
+<ol>
+<li>Request controller 把请求发给哪个 <code>attn_dp_rank</code>？</li>
+<li>Attention 使用哪些 ranks，KV 分别在哪些 pool？</li>
+<li>进入 dense MLP 前 token count 在哪个 group 同步？</li>
+<li>无 local request 的 rank 是否要构造 IDLE batch？</li>
+<li>TopK 选中 global expert 后 destination <code>ep_rank</code> 是谁？</li>
+<li>Dispatch/combine 是哪个 group 的 all-to-all？</li>
+<li>最后结果回到哪个 request owner？</li>
+</ol>
+
+<h2>已解例子：TP 8、DP 4、CP 1、EP 8</h2>
+<p><code>attn_tp_size=2</code>。ranks 0–1 属于 DPA 0，2–3 属于 DPA 1，4–5 属于 DPA 2，6–7 属于 DPA 3。Attention 在每个 2-rank group 内执行；MLP/MoE 仍跨 8-rank world。若有 256 routed experts，则每 EP rank 拥有连续 32 个。</p>
+</body>
+</html>

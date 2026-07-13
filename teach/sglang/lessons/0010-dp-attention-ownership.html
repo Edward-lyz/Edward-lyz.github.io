@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第十课：DP Attention 的 request、KV 与 collective ownership</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script defer src="../assets/quiz.js"></script>
+</head>
+<body>
+<h1>DP Attention 的 request、KV 与 collective ownership</h1>
+<p class="outcome">学完本课，你能追踪一个 DPA request 从 controller 路由、本地 attention/KV，到跨 TP world 的 MLP token gather，并解释空闲 rank 为什么仍要执行 IDLE batch。</p>
+
+<h2>Controller 先决定 request ownership</h2>
+<p><code>DataParallelController</code> 接收上游请求并按负载策略选择 DP worker。开启 DPA 时，一个 request 只进入一个 <code>attn_dp_rank</code> 的 Scheduler state；该 DP rank 拥有 request row、Radix match 与 KV cache。其他 DP ranks 不保存它的 KV 副本。<span class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/managers/data_parallel_controller.py#L129-L235">data_parallel_controller.py:129-235</a> 与 <a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/managers/data_parallel_controller.py#L456-L570">data_parallel_controller.py:456-570</a>。</span></p>
+
+<h2>一个 Transformer layer 内发生 ownership 切换</h2>
+<pre><code>DP rank local requests
+  → local embedding / attention inputs
+  → Attention on local request + local KV
+  → gather variable token counts across DPA ranks
+  → MLP or MoE across original TP world
+  → scatter/slice outputs back to each DP rank
+  → local sampling / request update</code></pre>
+<p>因此 DPA 的收益来自 KV 与 attention workload 的局部化，而不是让整层网络都完全数据并行。Dense MLP 参数仍按 TP shard；MoE 参数可再按 EP shard。每层边界都可能需要重新排列 token buffer。</p>
+
+<h2>Scheduler 先同步每个 DP rank 的 token count</h2>
+<p>各 DP rank 可以独立处于 prefill、decode 或 idle，local token 数不同。<code>DpAttnSchedulerAdapter</code> 把 local forward mode 和 token count 做 all-gather，得到 <code>global_num_tokens</code>，再准备 MLP gather metadata。这个同步发生在真正模型 collective 之前。</p>
+<table>
+<thead><tr><th>DP rank</th><th>Local mode</th><th>Local tokens</th></tr></thead>
+<tbody>
+<tr><td>0</td><td>EXTEND</td><td>512</td></tr>
+<tr><td>1</td><td>DECODE</td><td>24</td></tr>
+<tr><td>2</td><td>IDLE</td><td>0</td></tr>
+<tr><td>3</td><td>DECODE</td><td>20</td></tr>
+</tbody>
+</table>
+<p>rank 2 没有本地 attention，但其他 ranks 有 token 需要通过共享 MLP TP group。若 rank 2 直接跳过本轮，它将不进入 collective，其他 ranks 会挂死。因此 adapter 构造 <code>ForwardMode.IDLE</code> batch，让它以零 local tokens 参与必要的同步。<span class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/managers/scheduler_components/dp_attn.py#L47-L139">dp_attn.py:47-139</a> 与 <a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/managers/scheduler_components/dp_attn.py#L181-L249">dp_attn.py:181-249</a>。</span></p>
+
+<div class="invariant"><strong>IDLE 是 collective correctness，不是业务工作</strong>它不凭空创建 request，也不分配其 KV；它让所有 group members 以一致顺序进入跨-rank MLP path。</div>
+
+<h2>TP 8、DPA 8 的完整所有权</h2>
+<ul>
+<li>进程：8 个 TP Scheduler processes，不是 64 个。</li>
+<li>Request：controller 选择 1 个 DP rank。</li>
+<li>KV：该 DP rank 本地 pool 持有。</li>
+<li>Attention：<code>attn_tp_size=1</code>，本 rank 执行。</li>
+<li>MLP：8-rank TP world 汇聚 token 并执行参数 shards。</li>
+<li>输出：回到 request owner 做采样与状态更新。</li>
+</ul>
+
+<h2>最小自检</h2>
+<div class="quiz" data-answer="3">
+<h3>DPA rank 本地无 request，但同一 TP world 的其他 ranks 有 MLP tokens。它应当怎样做？</h3>
+<label><input type="radio" name="q10" value="1">退出当前进程</label>
+<label><input type="radio" name="q10" value="2">复制远端 request</label>
+<label><input type="radio" name="q10" value="3">构造本地 IDLE batch</label>
+<label><input type="radio" name="q10" value="4">跳过全部 collective</label>
+<div class="feedback correct" aria-live="polite">正确。IDLE batch 保持 collective 调用顺序一致，但不为远端 request 创建本地 KV ownership。</div>
+<div class="feedback incorrect" aria-live="polite">不对。所有 TP group members 必须进入对应 collective。正确做法是零 local tokens 的 IDLE batch。</div>
+</div>
+</body>
+</html>

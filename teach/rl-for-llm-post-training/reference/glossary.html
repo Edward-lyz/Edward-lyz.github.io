@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RL for LLM Post-Training — 术语表</title>
+<link rel="stylesheet" href="../assets/rl-course.css">
+</head>
+<body>
+
+<h1>术语表</h1>
+<p class="subtitle">RL for LLM Post-Training 核心术语速查</p>
+
+<table class="vocab-table">
+<tr><th>术语</th><th>定义</th><th>首次出现</th></tr>
+<tr><td>State (s)</td><td>当前环境信息。LLM 中 = prompt + 已生成文本</td><td>Lesson 01</td></tr>
+<tr><td>Action (a)</td><td>模型的一次选择。LLM 中 = 一个 token 或工具调用</td><td>Lesson 01</td></tr>
+<tr><td>Policy (π<sub>θ</sub>)</td><td>在状态 s 下选择动作 a 的概率分布。LLM 中 = next-token distribution</td><td>Lesson 01</td></tr>
+<tr><td>Reward (R)</td><td>对一次动作或一条轨迹的评分</td><td>Lesson 01</td></tr>
+<tr><td>Expected Reward J(θ)</td><td>策略的平均得分，RL 的优化目标</td><td>Lesson 01</td></tr>
+<tr><td>Policy Gradient</td><td>E[R · ∇log π(a|s)]。从采样中估计目标梯度的方法</td><td>Lesson 01</td></tr>
+<tr><td>Log-derivative trick</td><td>∇f = f · ∇log f。把概率梯度转为 log 概率梯度的恒等式</td><td>Lesson 01</td></tr>
+<tr><td>Trajectory (τ)</td><td>从开始到结束的完整状态-动作序列</td><td>Lesson 02</td></tr>
+<tr><td>Rollout</td><td>用当前策略实际生成一条 trajectory 的过程</td><td>Lesson 02</td></tr>
+<tr><td>Credit Assignment</td><td>判断长序列中哪些动作真正贡献了最终 reward</td><td>Lesson 02</td></tr>
+<tr><td>Variance</td><td>梯度估计的不稳定性。裸 PG 方差极高</td><td>Lesson 03</td></tr>
+<tr><td>Baseline (b)</td><td>从 reward 中减去的参考值，降低方差但不改变期望梯度</td><td>Lesson 03</td></tr>
+<tr><td>Value Function V(s)</td><td>从状态 s 开始按当前策略执行的预期总 reward</td><td>Lesson 03</td></tr>
+<tr><td>Q Function Q(s,a)</td><td>在状态 s 选动作 a 后的预期总 reward</td><td>Lesson 03</td></tr>
+<tr><td>Advantage A(s,a)</td><td>Q(s,a) − V(s)。该动作比平均好多少</td><td>Lesson 03</td></tr>
+<tr><td>Critic</td><td>估计 V(s) 的网络，和 Actor（策略网络）配合使用</td><td>Lesson 03</td></tr>
+<tr><td>Actor-Critic</td><td>Actor 生成动作 + Critic 估计价值的架构</td><td>Lesson 03</td></tr>
+<tr><td>Probability Ratio (ρ)</td><td>π<sub>new</sub>(a|s) / π<sub>old</sub>(a|s)。衡量新旧策略差距</td><td>Lesson 04</td></tr>
+<tr><td>PPO (Proximal Policy Optimization)</td><td>用 clip(ρ) 限制更新幅度的 policy gradient 方法</td><td>Lesson 04</td></tr>
+<tr><td>Clip</td><td>将 ρ 强制限制在 [1−ε, 1+ε] 范围内</td><td>Lesson 04</td></tr>
+<tr><td>GRPO (Group Relative Policy Optimization)</td><td>用组内 reward 均值替代 Critic 作为 baseline 的 PPO 变体</td><td>Lesson 05</td></tr>
+<tr><td>Cold Start (冷启动)</td><td>用教师数据 SFT 把成功率提高到 RL 能工作的范围</td><td>Lesson 06</td></tr>
+<tr><td>Path Dependence (路径依赖)</td><td>早期数据通过改变参数影响后续所有 rollout 和更新</td><td>Lesson 06</td></tr>
+<tr><td>OPD (On-Policy Distillation)</td><td>student 生成 rollout，teacher 在 student 状态上指导</td><td>Lesson 06</td></tr>
+<tr><td>Distribution Mismatch</td><td>训练时见过的状态和部署时实际遇到的状态不一致</td><td>Lesson 06</td></tr>
+<tr><td>Reward Hacking</td><td>模型找到最大化 reward 但不符合真实目标的捷径</td><td>Lesson 06</td></tr>
+</table>
+
+<div class="nav-links">
+<a href="../lessons/0001-rl-five-basics.html">→ 回到第一课</a>
+<span></span>
+</div>
+
+</body>
+</html>

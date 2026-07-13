@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DFlash 前向传播动画</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: #1a1a2e;
+  color: #eee;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 1.5rem 1rem;
+}
+h1 { font-size: 1.3rem; margin-bottom: 0.3rem; }
+.subtitle { color: #8892b0; font-size: 0.8rem; margin-bottom: 1rem; }
+
+.stage {
+  width: 100%;
+  aspect-ratio: 2.2 / 1;
+  background: #0f0f23;
+  border-radius: 10px;
+  border: 1px solid #333;
+  position: relative;
+  overflow: hidden;
+}
+
+.token {
+  position: absolute;
+  padding: 0.35em 0.7em;
+  border-radius: 5px;
+  font-size: clamp(0.55rem, 1.2vw, 0.78rem);
+  font-weight: 600;
+  white-space: nowrap;
+  transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+  opacity: 0;
+  transform: scale(0.8);
+}
+.token.visible { opacity: 1; transform: scale(1); }
+.token.target { background: #2563eb; color: white; }
+.token.anchor { background: #16a34a; color: white; }
+.token.mask { background: #475569; color: #94a3b8; border: 1px dashed #64748b; }
+.token.hidden { background: #7c3aed; color: white; }
+.token.logit { background: #0891b2; color: white; }
+.token.sample { background: #dc2626; color: white; }
+.token.ctx { background: #d97706; color: white; }
+.token.problem { background: #dc2626; color: white; border: 2px solid #fca5a5; }
+
+.region {
+  position: absolute;
+  border-radius: 7px;
+  border: 1px solid;
+  transition: all 0.5s ease;
+  opacity: 0;
+}
+.region.visible { opacity: 1; }
+.region.r-target { border-color: #2563eb; background: rgba(37,99,235,0.06); }
+.region.r-draft { border-color: #d97706; background: rgba(217,119,6,0.06); }
+.region.r-problem { border-color: #dc2626; background: rgba(220,38,38,0.08); }
+
+.region-label {
+  position: absolute;
+  font-size: clamp(0.5rem, 1vw, 0.63rem);
+  color: #8892b0;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.desc {
+  width: 100%;
+  margin-top: 0.8rem;
+  padding: 0.8rem 1rem;
+  background: #16213e;
+  border-radius: 8px;
+  min-height: 60px;
+  font-size: clamp(0.75rem, 1.4vw, 0.88rem);
+  line-height: 1.6;
+  color: #ccd6f6;
+}
+.desc strong { color: #64ffda; }
+.desc em { color: #f59e0b; font-style: normal; }
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  margin-top: 0.8rem;
+  width: 100%;
+}
+.controls button {
+  padding: 0.4rem 1.2rem;
+  border: 1px solid #64ffda;
+  background: transparent;
+  color: #64ffda;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  transition: all 0.2s;
+}
+.controls button:hover:not(:disabled) { background: #64ffda; color: #0f0f23; }
+.controls button:disabled { opacity: 0.3; cursor: not-allowed; }
+.controls .progress { color: #8892b0; font-size: 0.75rem; margin-left: auto; }
+</style>
+</head>
+<body>
+
+<h1>DFlash: Parallel Drafter 前向传播</h1>
+<p class="subtitle">点击推进，理解 parallel 独立预测的优势与局限</p>
+
+<div class="stage" id="stage"></div>
+<div class="desc" id="desc"></div>
+<div class="controls">
+  <button type="button" id="prevBtn">← 上一步</button>
+  <button type="button" id="nextBtn">下一步 →</button>
+  <span class="progress" id="progress"></span>
+  <button type="button" id="resetBtn" style="border-color:#8892b0; color:#8892b0;">重置</button>
+</div>
+
+<script>
+const stage = document.getElementById('stage');
+const desc = document.getElementById('desc');
+const prevBtn = document.getElementById('prevBtn');
+const nextBtn = document.getElementById('nextBtn');
+const resetBtn = document.getElementById('resetBtn');
+const progress = document.getElementById('progress');
+
+let currentStep = -1;
+const elements = {};
+
+function el(id, cls, text, xPct, yPct) {
+  const d = document.createElement('div');
+  d.className = 'token ' + cls;
+  d.textContent = text;
+  d.style.left = xPct + '%';
+  d.style.top = yPct + '%';
+  stage.appendChild(d);
+  elements[id] = d;
+}
+function reg(id, cls, xPct, yPct, wPct, hPct, label) {
+  const d = document.createElement('div');
+  d.className = 'region ' + cls;
+  d.style.left = xPct + '%';
+  d.style.top = yPct + '%';
+  d.style.width = wPct + '%';
+  d.style.height = hPct + '%';
+  stage.appendChild(d);
+  elements[id] = d;
+  if (label) {
+    const lb = document.createElement('div');
+    lb.className = 'region-label';
+    lb.textContent = label;
+    lb.style.left = xPct + '%';
+    lb.style.top = (yPct - 5) + '%';
+    stage.appendChild(lb);
+  }
+}
+function show() { for (let i = 0; i < arguments.length; i++) { const e = elements[arguments[i]]; if (e) e.classList.add('visible'); } }
+function hide() { for (let i = 0; i < arguments.length; i++) { const e = elements[arguments[i]]; if (e) e.classList.remove('visible'); } }
+
+function buildScene() {
+  stage.innerHTML = '';
+  for (const k in elements) delete elements[k];
+
+  reg('r-target', 'r-target', 2, 6, 96, 22, 'TARGET MODEL — EXTRACT CONTEXT FEATURES');
+  reg('r-draft', 'r-draft', 2, 35, 96, 32, 'DFLASH DRAFT MODEL (5 LAYERS, BIDIRECTIONAL ATTN)');
+  reg('r-problem', 'r-problem', 2, 74, 96, 20, '⚠️ INDEPENDENT SAMPLING');
+
+  el('tl1', 'target', 'Layer 1', 5, 14);
+  el('tl2', 'target', 'Layer 9', 22, 14);
+  el('tl3', 'target', 'Layer 17', 40, 14);
+  el('tl4', 'target', 'Layer 25', 60, 14);
+  el('tl5', 'target', 'Layer 33', 78, 14);
+
+  el('ctx', 'ctx', 'H_ctx = RMSNorm(W_c · [H¹;H⁹;H¹⁷;H²⁵;H³³])', 20, 28);
+
+  el('anc', 'anchor', 'emb(x₀)', 4, 42);
+  el('mk1', 'mask', 'MASK', 18, 42);
+  el('mk2', 'mask', 'MASK', 34, 42);
+  el('mk3', 'mask', 'MASK', 50, 42);
+  el('mk4', 'mask', 'MASK', 66, 42);
+
+  el('h1', 'hidden', 'h₁', 18, 55);
+  el('h2', 'hidden', 'h₂', 34, 55);
+  el('h3', 'hidden', 'h₃', 50, 55);
+  el('h4', 'hidden', 'h₄', 66, 55);
+
+  el('u1', 'logit', 'U₁→softmax', 10, 78);
+  el('u2', 'logit', 'U₂→softmax', 30, 78);
+  el('u3', 'logit', 'U₃→softmax', 50, 78);
+  el('u4', 'logit', 'U₄→softmax', 70, 78);
+
+  el('x1', 'sample', 'x₁="of"', 14, 89);
+  el('x2', 'sample', 'x₂="problem"', 34, 89);
+  el('x3', 'sample', 'x₃="course"', 55, 89);
+  el('x4', 'sample', 'x₄="!"', 76, 89);
+
+  el('collision', 'problem', '❌ "of problem" — multi-modal collision!', 25, 89);
+}
+
+const steps = [
+  {
+    action() { show('r-target', 'tl1', 'tl2', 'tl3', 'tl4', 'tl5'); },
+    desc: '<strong>Step 1 — Extract Context</strong>：从 target model 的 5 个中间层各取 hidden states。'
+  },
+  {
+    action() { show('ctx'); },
+    desc: '<strong>Step 2 — Projection</strong>：拼接 → W_c projection (md→d) → RMSNorm → H_ctx。注入到 draft attention 的每一层。'
+  },
+  {
+    action() { show('r-draft', 'anc', 'mk1', 'mk2', 'mk3', 'mk4'); },
+    desc: '<strong>Step 3 — Draft 输入</strong>：anchor emb + γ 个 MASK emb。Block 内 <em>bidirectional attention</em>，同时 causal attend H_ctx。'
+  },
+  {
+    action() { show('h1', 'h2', 'h3', 'h4'); hide('mk1', 'mk2', 'mk3', 'mk4'); },
+    desc: '<strong>Step 4 — Parallel 前传</strong>：5 层 Transformer 一次前传。h₁~h₄ 同时产出。bidirectional attn 共享了 hidden state 信息，但这<em>不等于采样依赖</em>。'
+  },
+  {
+    action() { show('r-problem', 'u1', 'u2', 'u3', 'u4'); },
+    desc: '<strong>Step 5 — 独立 Softmax</strong>：每个位置 LM_Head(h_k) → U_k → softmax → sample。各 softmax 之间<em>无信息流</em>。'
+  },
+  {
+    action() { show('x1', 'x2'); hide('x3', 'x4', 'collision'); },
+    desc: '<strong>Step 6 — Multi-modal Collision</strong>：context 允许 "of course" / "no problem"。Pos 1 采到 "of"，pos 2 独立采到 "problem" → 不一致！'
+  },
+  {
+    action() { hide('x1', 'x2'); show('collision'); },
+    desc: '<strong>Step 7 — Suffix Decay 本质</strong>：每个位置对所有前驱取边际分布而非条件分布。后续位置误差累积 → acceptance rate 快速下降。<em>这就是 DSpark 要解决的问题。</em>'
+  },
+];
+
+function applyStep(idx) {
+  buildScene();
+  for (let i = 0; i <= idx; i++) steps[i].action();
+  desc.innerHTML = steps[idx].desc;
+  progress.textContent = (idx + 1) + ' / ' + steps.length;
+  prevBtn.disabled = idx <= 0;
+  nextBtn.disabled = idx >= steps.length - 1;
+}
+
+nextBtn.addEventListener('click', () => { if (currentStep < steps.length - 1) { currentStep++; applyStep(currentStep); } });
+prevBtn.addEventListener('click', () => { if (currentStep > 0) { currentStep--; applyStep(currentStep); } });
+resetBtn.addEventListener('click', () => {
+  currentStep = -1;
+  buildScene();
+  desc.innerHTML = '点击「下一步」开始演示。';
+  progress.textContent = '0 / ' + steps.length;
+  prevBtn.disabled = true;
+  nextBtn.disabled = false;
+});
+
+buildScene();
+desc.innerHTML = '点击「下一步」开始演示。';
+progress.textContent = '0 / ' + steps.length;
+prevBtn.disabled = true;
+</script>
+</body>
+</html>

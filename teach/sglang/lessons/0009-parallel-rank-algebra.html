@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第九课：Parallel rank algebra</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script defer src="../assets/quiz.js"></script>
+</head>
+<body>
+<h1>Parallel rank algebra</h1>
+<p class="outcome">学完本课，你能从 <code>tp_size</code>、<code>dp_size</code> 与 <code>attn_cp_size</code> 推导每个 rank 的 attention TP/DP 坐标，并避免把 DP Attention 误算成额外 GPU 维度。</p>
+
+<h2>先固定物理 world，再解释逻辑维度</h2>
+<p>在本课程的 <code>pp_size=1</code> 路径中，模型并行 world 有 <code>tp_size</code> 个 ranks。开启 DP Attention 时，<code>dp_size</code> 不是再乘出一组完整模型 replicas，而是在这个 TP world 内重新解释 attention ownership：</p>
+<pre><code>world_size   = tp_size × pp_size
+attn_dp_size = dp_size
+attn_tp_size = tp_size / dp_size / attn_cp_size
+
+tp_rank = (attn_dp_rank × attn_cp_size + attn_cp_rank)
+          × attn_tp_size + attn_tp_rank</code></pre>
+<p>本课程不深入 Context Parallel，但公式保留该维度，避免以后把 rank mapping 写错。约束是整除关系必须成立。<span class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/layers/dp_attention.py#L245-L259">dp_attention.py:245-259</a> 与 <a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/distributed/parallel_state.py#L1983-L2130">parallel_state.py:1983-2130</a>。</span></p>
+
+<h2>例一：TP 8、DPA 8</h2>
+<pre><code>tp_size=8, dp_size=8, attn_cp_size=1
+attn_tp_size=1
+
+TP rank:       0 1 2 3 4 5 6 7
+attn_dp_rank:  0 1 2 3 4 5 6 7
+attn_tp_rank:  0 0 0 0 0 0 0 0</code></pre>
+<p>每个 DP rank 的 attention 本地执行，不做 attention TP；但 dense MLP 或 MoE layer 仍处在原来的 8-rank model world 中。8 张 GPU 仍是 8 张，不是 64 张。</p>
+
+<h2>例二：TP 8、DPA 4</h2>
+<table>
+<thead><tr><th>TP ranks</th><th><code>attn_dp_rank</code></th><th><code>attn_tp_rank</code></th><th>Attention ownership</th></tr></thead>
+<tbody>
+<tr><td>0, 1</td><td>0</td><td>0, 1</td><td>DP shard 0 的 2-way TP</td></tr>
+<tr><td>2, 3</td><td>1</td><td>0, 1</td><td>DP shard 1 的 2-way TP</td></tr>
+<tr><td>4, 5</td><td>2</td><td>0, 1</td><td>DP shard 2 的 2-way TP</td></tr>
+<tr><td>6, 7</td><td>3</td><td>0, 1</td><td>DP shard 3 的 2-way TP</td></tr>
+</tbody>
+</table>
+<p>Attention group 的宽度是 2，但 MLP 的 TP group 宽度仍是 8。这种同一 rank 在不同 layer 使用不同 group 的设计，是理解后续 token gather 与 idle batch 的前提。</p>
+
+<h2>不要混淆三种 DP 说法</h2>
+<ul>
+<li>Native DP：controller 启动多个完整 worker replicas，GPU 数量通常随 replica 数相乘。</li>
+<li>外部 replicas：分别启动多个 server，再由 gateway/router 分流。</li>
+<li>DP Attention：在一个 TP world 内让各 DP rank 拥有独立 requests/KV，attention 局部化，MLP 仍跨 world 协作。</li>
+</ul>
+<p>同一个 <code>--dp-size</code> 在不同 enable flags 下可进入不同启动语义，所以读配置时不能脱离 <code>--enable-dp-attention</code>。<span class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/docs/advanced_features/dp_dpa_smg_guide.md#data-parallelism-dp-dp-attention-dpa-and-sglang-model-gateway-smg-guide">官方 DP/DPA guide</a>。</span></p>
+
+<div class="invariant"><strong>先算 group，再谈 collective</strong>看到 all-reduce、all-gather 或 all-to-all 时，第一问不是通信量，而是 group members。group 算错，后面的性能模型全部无效。</div>
+
+<h2>最小自检</h2>
+<div class="quiz" data-answer="4">
+<h3><code>tp=16</code>、<code>dp=4</code>、<code>attn_cp=2</code> 时，<code>attn_tp_size</code> 是多少？</h3>
+<label><input type="radio" name="q9" value="1">十六 ranks</label>
+<label><input type="radio" name="q9" value="2">八个 ranks</label>
+<label><input type="radio" name="q9" value="3">四个 ranks</label>
+<label><input type="radio" name="q9" value="4">两个 ranks</label>
+<div class="feedback correct" aria-live="polite">正确。<code>attn_tp_size = 16 / 4 / 2 = 2</code>。</div>
+<div class="feedback incorrect" aria-live="polite">不对。按公式先除 attention DP，再除 attention CP：<code>16 / 4 / 2 = 2</code>。</div>
+</div>
+</body>
+</html>

@@ -1,0 +1,39 @@
+{
+  "title": "DeepSpec / DSpark 投机解码",
+  "lessons": [
+    {
+      "title": "Lesson 00：Speculative Decoding 通用验证机制",
+      "path": "lessons/0000-rejection-sampling-foundation.html"
+    },
+    {
+      "title": "EAGLE：Feature-Level Autoregressive Draft",
+      "path": "lessons/0001-eagle-feature-level-draft.html"
+    },
+    {
+      "title": "EAGLE2：Context-Aware Dynamic Draft with Tree Attention",
+      "path": "lessons/0002-eagle2-dynamic-tree-draft.html"
+    },
+    {
+      "title": "EAGLE3：Training-Time Test (TTT) + Deep Draft",
+      "path": "lessons/0003-eagle3-ttt-deep-draft.html"
+    },
+    {
+      "title": "DFlash：Parallel Drafter 的原理与局限",
+      "path": "lessons/0004-dflash-parallel-drafter.html"
+    },
+    {
+      "title": "DSpark：Semi-Autoregressive Generation",
+      "path": "lessons/0005-dspark-semi-autoregressive.html"
+    }
+  ],
+  "references": [
+    {
+      "title": "DSpark 架构速查",
+      "path": "reference/dspark-architecture-overview.html"
+    },
+    {
+      "title": "术语表：DSpark / Speculative Decoding",
+      "path": "reference/glossary.html"
+    }
+  ]
+}

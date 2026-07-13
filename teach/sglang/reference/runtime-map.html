@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SGLang v0.5.15 Runtime Map</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+<h1>SGLang v0.5.15 Runtime Map</h1>
+<p class="outcome">默认 HTTP serving 路径的进程边界、启动调用链和第一批源码锚点。</p>
+
+<h2>默认数据路径</h2>
+<figure>
+  <div class="runtime-flow">
+    <div class="step">HTTP / TokenizerManager</div><div class="arrow">→</div><div class="step">scheduler_input_ipc</div>
+    <div class="step">Scheduler rank 0</div><div class="arrow">→</div><div class="step">TP rank broadcast</div>
+    <div class="step">ScheduleBatch</div><div class="arrow">→</div><div class="step">TpModelWorker / GPU</div>
+    <div class="step">Batch result</div><div class="arrow">→</div><div class="step">DetokenizerManager / HTTP</div>
+  </div>
+  <figcaption>这是 control/data ownership 图，不表示每个箭头都是一次网络通信。</figcaption>
+</figure>
+
+<h2>启动调用链</h2>
+<pre><code>sglang serve
+└─ sglang.cli.serve.serve
+   └─ sglang.launch_server.run_server
+      └─ srt.entrypoints.http_server.launch_server
+         └─ Engine._launch_subprocesses
+            └─ Engine._launch_scheduler_processes
+               └─ multiprocessing.Process(run_scheduler_process)
+                  └─ Scheduler(...).run_event_loop()</code></pre>
+
+<h2>Normal loop</h2>
+<pre><code>recv_requests
+process_input_requests
+get_next_batch_to_run
+run_batch
+process_batch_result
+last_batch = batch</code></pre>
+
+<h2>Overlap loop 的一轮错位</h2>
+<pre><code>submit batch N → result_queue.append(copy(N), result(N))
+                 process result(N-1)
+                 last_batch = N</code></pre>
+<p>Overlap 复用同一个选批函数，只把当前 GPU work 与上一轮 CPU result processing 交叠。读 trace 时要分别标记 current batch、queued result 与 processed batch。</p>
+
+<h2>输出回程</h2>
+<pre><code>Scheduler BatchTokenIDOutput
+→ DetokenizerManager incremental decode
+→ BatchStrOutput
+→ TokenizerManager request state
+→ HTTP/SSE</code></pre>
+
+<div class="invariant">
+  <strong>核心不变量</strong>
+  Scheduler 每轮选择的是一次 forward 的 <code>ScheduleBatch</code>，不是把一个 request 一次性执行完。request 会跨越多轮 event loop。
+</div>
+
+<h2>源码锚点</h2>
+<table>
+<thead><tr><th>问题</th><th>入口</th></tr></thead>
+<tbody>
+<tr><td>谁创建 Scheduler processes</td><td><code>srt/entrypoints/engine.py::_launch_scheduler_processes</code></td></tr>
+<tr><td>Scheduler process 如何启动</td><td><code>srt/managers/scheduler.py::run_scheduler_process</code></td></tr>
+<tr><td>正常循环做什么</td><td><code>srt/managers/scheduler.py::event_loop_normal</code></td></tr>
+<tr><td>CPU/GPU 如何重叠</td><td><code>srt/managers/scheduler.py::event_loop_overlap</code></td></tr>
+<tr><td>请求由哪个 rank 接收</td><td><code>srt/managers/scheduler_components/request_receiver.py</code></td></tr>
+<tr><td>batch 如何进入模型</td><td><code>srt/managers/scheduler.py::run_batch</code></td></tr>
+<tr><td>请求与 batch 的状态载体</td><td><code>srt/managers/schedule_batch.py::Req</code> 与 <code>ScheduleBatch</code></td></tr>
+<tr><td>token ids 如何变回文本</td><td><code>srt/managers/detokenizer_manager.py</code></td></tr>
+</tbody>
+</table>
+
+</body>
+</html>

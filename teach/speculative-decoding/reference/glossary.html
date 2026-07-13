@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>术语表：DSpark / Speculative Decoding</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+  onload="renderMathInElement(document.body, {delimiters:[{left:'\\[',right:'\\]',display:true},{left:'\\(',right:'\\)',display:false}]})"></script>
+</head>
+<body>
+
+<h1>术语表：DSpark / Speculative Decoding</h1>
+
+<p>本表覆盖 DSpark 论文及 Lesson 0–1 中出现的全部术语和符号。首次阅读课程前建议通读一遍。</p>
+
+<h2>一、核心角色</h2>
+
+<table>
+<tr><th>术语</th><th>含义</th></tr>
+<tr><td><strong>Target model</strong></td><td>要加速的大模型（如 DeepSeek-V4）。它的输出分布 \(p^t\) 是正确答案，不可妥协。</td></tr>
+<tr><td><strong>Draft model / Drafter</strong></td><td>轻量小模型，快速生成候选 token 序列供 target 验证。输出分布 \(p^d\)。</td></tr>
+<tr><td><strong>Verification（验证）</strong></td><td>Target model 一次前传，对 draft 生成的整段候选做 rejection sampling，决定接受多少个。</td></tr>
+</table>
+
+<h2>二、一轮 Speculative Decoding 的结构</h2>
+
+<table>
+<tr><th>术语</th><th>含义</th></tr>
+<tr><td><strong>Decoding round / 轮</strong></td><td>一个完整的 draft → verify 循环。每轮向序列贡献若干个被接受的 token。</td></tr>
+<tr><td><strong>Anchor token \(x_0\)</strong></td><td>每轮 draft 的起始 token。它是上一轮 target 验证产出的最后一个确认 token（即 bonus token）。Draft model 看到 \(x_0\) 后开始生成后续 block。</td></tr>
+<tr><td><strong>Bonus token</strong></td><td>与 anchor token 同义（论文中互换使用）。Target 验证时即使全部 draft 被拒也会产出 1 个新 token。</td></tr>
+<tr><td><strong>Block</strong></td><td>一轮 draft 中生成的一整段候选 token 序列 \((x_1, x_2, \ldots, x_\gamma)\)。</td></tr>
+<tr><td><strong>Prefix</strong></td><td>Block 中从头开始的连续子序列。Rejection sampling 只能接受一个前缀——一旦位置 k 被拒，k+1 到 γ 全部作废。</td></tr>
+</table>
+
+<h2>三、数学符号</h2>
+
+<table>
+<tr><th>符号</th><th>类型</th><th>含义</th></tr>
+<tr><td>\(\gamma\)</td><td>整数</td><td><strong>Block size</strong>——一轮 draft 生成的候选 token 数量。典型值 5~16。</td></tr>
+<tr><td>\(\tau\)</td><td>实数</td><td><strong>Expected accepted length</strong>——一轮中平均被接受的 token 数（含 bonus）。\(\tau = 1 + \sum_{k=1}^{\gamma} a_k\)。</td></tr>
+<tr><td>\(T_{\text{draft}}\)</td><td>时间</td><td>Draft model 生成一个完整 block 的延迟。</td></tr>
+<tr><td>\(T_{\text{verify}}\)</td><td>时间</td><td>Target model 验证一个 block 的延迟。</td></tr>
+<tr><td>\(L\)</td><td>时间/token</td><td>Per-token latency = \(\frac{T_{\text{draft}} + T_{\text{verify}}}{\tau}\)。越小越好。</td></tr>
+<tr><td>\(p_k^d(v)\)</td><td>概率</td><td>Draft model 在位置 k 对 token v 的预测概率。</td></tr>
+<tr><td>\(p_k^t(v)\)</td><td>概率</td><td>Target model 在位置 k 对 token v 的真实概率。</td></tr>
+<tr><td>\(c_k\)</td><td>\(\in (0,1)\)</td><td><strong>Conditional acceptance probability</strong>——在前面全部被接受的前提下，位置 k 被接受的概率。</td></tr>
+<tr><td>\(a_k\)</td><td>\(\in (0,1)\)</td><td><strong>Prefix survival probability</strong>——前 k 个 token 全部被接受的联合概率。\(a_k = \prod_{i=1}^k c_i\)。</td></tr>
+<tr><td>\(U_k(v)\)</td><td>实数</td><td>Parallel backbone 输出的 base logit（位置 k，token v）。不依赖前驱采样结果。</td></tr>
+<tr><td>\(B_k(v)\) 或 \(B(x_{k-1}, v)\)</td><td>实数</td><td>Sequential head 输出的 bias（位置 k，token v）。依赖前一个被采样的 token \(x_{k-1}\)。</td></tr>
+<tr><td>\(r\)</td><td>整数</td><td><strong>Markov rank</strong>——low-rank 分解的秩。典型值 256。控制 Markov head 参数量和表达力。</td></tr>
+<tr><td>\(V\)</td><td>整数</td><td>词表大小 (Vocabulary size)。Qwen3 系列约 152k。</td></tr>
+<tr><td>\(d\)</td><td>整数</td><td>Hidden state 维度（draft backbone 输出）。</td></tr>
+<tr><td>\(W_1 \in \mathbb{R}^{V \times r}\)</td><td>矩阵</td><td>Markov head 的 embedding table。给定 token id → lookup → 得到 r 维向量。</td></tr>
+<tr><td>\(W_2 \in \mathbb{R}^{r \times V}\)</td><td>矩阵</td><td>Markov head 的 projection matrix。将 r 维 latent → 投影为 V 维 bias。</td></tr>
+<tr><td>\(s_k\)</td><td>向量 \(\in \mathbb{R}^r\)</td><td>RNN head 的 recurrent state。初始 \(s_0 = \mathbf{0}\)。</td></tr>
+<tr><td>\(h_k\)</td><td>向量 \(\in \mathbb{R}^d\)</td><td>Backbone 在位置 k 输出的 hidden state。</td></tr>
+<tr><td>\(\text{SPS}(B)\)</td><td>实数</td><td><strong>Steps Per Second</strong>——target model 在 batch size = B 时每秒能做的前传步数。预先 profile 一次。</td></tr>
+<tr><td>\(\Theta\)</td><td>实数</td><td><strong>System throughput</strong>——每秒系统产出的 accepted token 总数 = \(\tau \cdot \text{SPS}(B)\)。</td></tr>
+<tr><td>\(R\)</td><td>整数</td><td>当前 batch 中的活跃 request 数量。</td></tr>
+<tr><td>\(\ell_r\)</td><td>整数</td><td>Request r 被 scheduler 分配的 verification prefix 长度 \(\in \{0, \ldots, \gamma\}\)。</td></tr>
+<tr><td>\(B\)</td><td>整数</td><td>总 batch token 数 = \(\sum_{r=1}^R (1 + \ell_r)\)。每个 request 至少贡献 1 个 anchor token。</td></tr>
+</table>
+
+<h2>四、架构组件</h2>
+
+<table>
+<tr><th>组件</th><th>作用</th><th>计算特性</th></tr>
+<tr><td><strong>Parallel Backbone</strong></td><td>5 层 Transformer（或 MoE），一次前传出 γ 个位置的 hidden states + base logits</td><td>O(1) 延迟，与 γ 无关</td></tr>
+<tr><td><strong>Sequential Head</strong></td><td>在 base logits 上加一个依赖前驱 token 的 bias，修复独立预测的缺陷</td><td>O(γ) 串行，但每步极轻量</td></tr>
+<tr><td><strong>Markov Head</strong></td><td>Sequential head 的一种实现：只看前一个 token \(x_{k-1}\)</td><td>每步 1 lookup + 1 matmul(r×V)</td></tr>
+<tr><td><strong>RNN Head</strong></td><td>Sequential head 的另一种实现：通过 GRU-like state 看完整前缀 \(x_{&lt;k}\)</td><td>每步 1 Linear(2r+d, 3r) + 1 matmul(r×V)</td></tr>
+<tr><td><strong>Confidence Head</strong></td><td>预测每个位置的条件接受概率 \(c_k\)</td><td>每步 1 Linear → sigmoid</td></tr>
+<tr><td><strong>Hardware-Aware Prefix Scheduler</strong></td><td>根据 \(c_k\) 和 SPS profile 决定每个 request 验证多少个 token</td><td>贪心排序 + 查表</td></tr>
+</table>
+
+<h2>五、关键概念</h2>
+
+<table>
+<tr><th>概念</th><th>含义</th></tr>
+<tr><td><strong>Suffix decay</strong></td><td>Parallel drafter 中后续位置的 acceptance rate 单调下降。原因：独立预测给出边际分布 \(p(x_k)\)，与条件分布 \(p(x_k \mid x_{&lt;k})\) 偏差越来越大。</td></tr>
+<tr><td><strong>Multi-modal collision</strong></td><td>Context 允许多种续写路径时，独立采样可能混合不同路径的 token（如 "of problem"），产生不一致组合。</td></tr>
+<tr><td><strong>Rejection sampling</strong></td><td>Speculative decoding 的核心验证机制：对每个 draft token 以 \(\min(1, p^t_k / p^d_k)\) 的概率接受。保证最终分布 = target 分布（lossless）。</td></tr>
+<tr><td><strong>Total Variation (TV) distance</strong></td><td>\(\text{TV}(p, q) = \frac{1}{2} \|p - q\|_1\)。理论结果：per-token acceptance probability = \(1 - \text{TV}(p^d_k, p^t_k)\)。</td></tr>
+<tr><td><strong>STS (Sequential Temperature Scaling)</strong></td><td>后校准方法：逐位置用 grid search 找最优 temperature，让 cumprod confidence 与实际 acceptance rate 对齐。</td></tr>
+<tr><td><strong>Lossless guarantee</strong></td><td>生成的最终 token 分布精确等于 target model 的分布。任何剪枝/scheduling 不能破坏此性质。</td></tr>
+<tr><td><strong>Non-anticipating property</strong></td><td>截断决策（验证长度的选择）不能依赖于尚未实例化的 token。违反则引入 selection bias → 破坏 lossless。</td></tr>
+</table>
+
+<h2>六、缩写</h2>
+
+<table>
+<tr><th>缩写</th><th>全称</th></tr>
+<tr><td>AR</td><td>Autoregressive</td></tr>
+<tr><td>MTP</td><td>Multi-Token Prediction（DeepSeek-V3/V4 内置的 draft 机制）</td></tr>
+<tr><td>ECE</td><td>Expected Calibration Error（校准误差度量）</td></tr>
+<tr><td>SPS</td><td>Steps Per Second（硬件吞吐量度量）</td></tr>
+<tr><td>ZOS</td><td>Zero-Overhead Scheduling（推理引擎的调度优化）</td></tr>
+<tr><td>KV cache</td><td>Key-Value cache（Transformer 推理中缓存的注意力 KV 对）</td></tr>
+<tr><td>TTT</td><td>Training-Time Test（EAGLE3 的训练范式，训练时模拟推理的多步展开）</td></tr>
+<tr><td>TV</td><td>Total Variation distance</td></tr>
+</table>
+
+<h2>七、EAGLE 系列术语</h2>
+
+<table>
+<tr><th>术语</th><th>含义</th></tr>
+<tr><td><strong>Feature-level draft</strong></td><td>在 target model 的 hidden state space 做 autoregressive 预测，而非直接在 token space。EAGLE 的核心创新。</td></tr>
+<tr><td><strong>Fusion Layer</strong></td><td>将 target hidden state \(\mathbf{f}_k\) 和 token embedding \(\mathbf{e}(x_k)\) concat 后投影为融合特征 \(\mathbf{h}_k\)。注入采样结果信息。</td></tr>
+<tr><td><strong>Tree Draft</strong></td><td>EAGLE2 的 draft 结构。每个节点可有多个 children → 一次验证覆盖多条路径 → acceptance 取 max。</td></tr>
+<tr><td><strong>Tree Attention</strong></td><td>验证 tree draft 时的 attention mask。每个节点只 attend to 自己的祖先和 context prefix。</td></tr>
+<tr><td><strong>Path Confidence</strong></td><td>从根到某叶节点的 draft 概率连乘。用于 EAGLE2 的贪心展开决策。</td></tr>
+<tr><td><strong>Expansion Value \(\Delta\tau\)</strong></td><td>展开某节点的边际收益 ≈ path_conf × child_top1_prob。EAGLE2 按此贪心排序。</td></tr>
+<tr><td><strong>Training-Time Test (TTT)</strong></td><td>EAGLE3 训练范式：展开 γ 步，每步输入是上一步自身的 hidden output（非 teacher forcing）。训练=推理分布。</td></tr>
+<tr><td><strong>Soft Distillation</strong></td><td>用 target model 的完整 output distribution \(p^t\) 做监督（soft label CE），而非只用 argmax（hard label）。</td></tr>
+<tr><td><strong>Step Loss Decay \(\lambda\)</strong></td><td>TTT 中每步 loss 的衰减系数。典型值 0.8。后续步权重递减避免噪声梯度主导。</td></tr>
+<tr><td><strong>Effective Depth</strong></td><td>EAGLE3 虽只有 1 层 decoder，但 TTT γ 步 + KV cache 累积 → 有效深度 = γ。</td></tr>
+</table>
+
+</body>
+</html>

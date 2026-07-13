@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 03: EAGLE3 — Training-Time Test (TTT) + Deep Draft</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+  onload="renderMathInElement(document.body, {delimiters:[{left:'\\[',right:'\\]',display:true},{left:'\\(',right:'\\)',display:false}]})"></script>
+<script defer src="../assets/quiz.js"></script>
+</head>
+<body>
+
+<h1>EAGLE3：Training-Time Test (TTT) + Deep Draft</h1>
+
+<p class="lesson-meta">
+<strong>前置阅读</strong>：<a href="../reference/glossary.html">术语表</a> ·
+<a href="0001-eagle-feature-level-draft.html">Lesson 01: EAGLE</a> ·
+<a href="0002-eagle2-dynamic-tree-draft.html">Lesson 02: EAGLE2</a><br>
+<strong>主要参考</strong>：<a href="https://openreview.net/forum?id=4exx1hUffq">EAGLE-3: Scaling Up Inference Acceleration via Training-Time Test (Li et al., 2026)</a><br>
+<strong>代码参考</strong>：<a href="https://github.com/deepseek-ai/DeepSpec/tree/main/deepspec/modeling/eagle3">DeepSpec/deepspec/modeling/eagle3/</a>
+</p>
+
+<!-- ═══════════ 一图流 ═══════════ -->
+<h2>一图流：EAGLE3 TTT 展开</h2>
+
+<iframe src="../assets/eagle3-animation.html" title="EAGLE3 TTT 展开动画" style="width:100%; aspect-ratio:5/4; border:1px solid #333; border-radius:8px;" loading="lazy"></iframe>
+
+<!-- ═══════════ 背景 ═══════════ -->
+<h2>1. 背景：EAGLE/EAGLE2 的两个天花板</h2>
+
+<h3>1.1 Draft Model 太浅</h3>
+
+<p>EAGLE/EAGLE2 都用 1 层 Transformer decoder 做 draft。原因是：</p>
+
+<ul>
+<li>Draft 是 autoregressive 的 → 每步延迟正比于 draft model 层数</li>
+<li>如果用 N 层，\(T_{\text{step}} = N \times T_{\text{layer}}\) → 多层的延迟代价无法接受</li>
+</ul>
+
+<p>但 1 层 Transformer 的表达力有限——它本质上只做一次 attention + 一次 FFN。对复杂模式（多跳推理、长距离依赖），1 层不够。</p>
+
+<h3>1.2 训练/推理分布不匹配</h3>
+
+<p>EAGLE 的训练用 teacher forcing：输入真实 \(\mathbf{f}_k\)，预测 \(\mathbf{f}_{k+1}\)。但推理时只有第一步用真实 feature，后续步骤用自己的预测——即 exposure bias。</p>
+
+<p>EAGLE2 的 tree 结构缓解了问题（错误路径被剪枝），但没有从根本上解决。</p>
+
+<div class="key-insight">
+<strong>EAGLE3 的核心想法</strong>：既然 draft 是串行的，那就让训练也模拟串行展开。<br><br>
+如果训练时就让 draft model 「一步一步自己走」（像推理一样），然后在每一步都收到 target 的监督信号，那训练就和推理的数据分布完全对齐了。<br><br>
+这就是 <strong>Training-Time Test (TTT)</strong>：训练过程本身就是一个 multi-step test-like 展开。
+</div>
+
+<!-- ═══════════ 创新点 ═══════════ -->
+<h2>2. 创新点</h2>
+
+<h3>2.1 TTT 训练范式</h3>
+
+<p>传统训练：一次前传，所有 γ 个位置并行预测，teacher forcing。<br>
+TTT 训练：展开 γ 步，每步串行前传，输入是上一步自己的 hidden state（和推理时完全一样）。</p>
+
+<table>
+<tr><th>方面</th><th>EAGLE (Teacher Forcing)</th><th>EAGLE3 (TTT)</th></tr>
+<tr><td>Step k 的输入</td><td>真实 \(\mathbf{f}_k\)</td><td>上一步的输出 \(\hat{\mathbf{h}}_{k-1}\)（和推理一样）</td></tr>
+<tr><td>监督信号</td><td>\(x_k^*\)（hard label CE）</td><td>\(p^t_k\)（soft label KL/CE，来自 target logits）</td></tr>
+<tr><td>梯度流</td><td>每步独立（不穿越步间）</td><td>多步展开（梯度穿越所有步骤）</td></tr>
+<tr><td>分布匹配</td><td>训练 ≠ 推理（exposure bias）</td><td>训练 = 推理（完全对齐）</td></tr>
+</table>
+
+<h3>2.2 Multi-Layer Stacking via KV Cache</h3>
+
+<p>TTT 使每步只做一次前传，draft model 的 KV cache 跨步累积。这让 N 层 draft model 变得可行：</p>
+
+<div class="key-insight">
+<strong>关键洞察</strong>：TTT 的每一步不是独立的——它共享 KV cache。<br><br>
+step k 前传时，KV cache 已包含 step 0 到 k-1 的所有 key/value。这等价于让 draft model 在 step k 时能 attend to 所有历史。<br><br>
+因此：即使 draft model 只有 1 层，TTT γ 步后的有效深度 = γ 层（通过 KV cache 累积的 attention 实现）。<br><br>
+EAGLE3 实际使用 1 层 decoder + TTT length 7 → <strong>有效深度 7</strong>，远超 EAGLE 的 1 层。
+</div>
+
+<h3>2.3 Multi-Layer Feature Input</h3>
+
+<p>EAGLE 只用 target model 最后一层的 hidden state \(\mathbf{f}_L\) 做输入。EAGLE3 提取多层 hidden state 拼接：</p>
+
+<div class="math-block">
+<span class="label">Multi-layer context feature</span>
+\[\mathbf{f}_{\text{ctx}} = [h_{l_1};\; h_{l_2};\; h_{l_3};\; h_{l_4};\; h_{l_5}] \in \mathbb{R}^{5d}\]
+</div>
+
+<p>然后通过一个 Linear projection 压回 \(d\) 维：</p>
+
+\[\mathbf{f}_{\text{proj}} = W_{\text{fc}} \cdot \mathbf{f}_{\text{ctx}} \in \mathbb{R}^d\]
+
+<p>DeepSpec 代码中 Qwen3-4B 的 target layer ids = [1, 9, 17, 25, 33]，均匀覆盖 target model 的 36 层。这让 draft model 能同时利用浅层的 token pattern 和深层的 semantic 信息。</p>
+
+<h3>2.4 Distillation Loss (Soft Label)</h3>
+
+<p>EAGLE 用 hard label CE（只看 target 的 argmax token）。EAGLE3 用 soft label——直接匹配 target model 的完整 output distribution：</p>
+
+<div class="math-block">
+<span class="label">Soft cross-entropy loss</span>
+\[\mathcal{L}_{\text{step}} = -\sum_{v \in \mathcal{V}} p^t(v) \cdot \log p^d(v)\]
+</div>
+
+<p>好处：soft label 包含了更丰富的监督信号——不仅告诉 draft 「正确答案是什么」，还告诉它「每个选项的概率应该是多少」。这对提升 acceptance rate（\(1 - \text{TV}(p^d, p^t)\)）有直接作用。</p>
+
+<!-- ═══════════ 公式推导 ═══════════ -->
+<h2>3. 公式推导</h2>
+
+<h3>3.1 TTT 展开：单样本的 γ 步训练</h3>
+
+<p>给定一个训练样本的 token 序列 \((x_1, \ldots, x_T)\) 和对应的 target hidden states \((\mathbf{f}_1, \ldots, \mathbf{f}_T)\)、target logits \((\ell_1, \ldots, \ell_T)\)。</p>
+
+<div class="derivation">
+<div class="step">
+<span class="step-label">Step 0：准备 target soft labels</span>
+\[p^t_k = \text{softmax}(\ell_k) \in \mathbb{R}^V, \quad k = 1, \ldots, T\]
+<p>预先算好所有位置的 target 分布。注意 target logits 是离线收集的，不参与梯度。</p>
+</div>
+
+<div class="step">
+<span class="step-label">Step 1 (TTT step 0)：初始化 — 用真实 feature 启动</span>
+\[\mathbf{h}^{(0)} = W_{\text{fc}} \cdot \mathbf{f}_{\text{ctx}} \in \mathbb{R}^{B \times T \times d}\]
+<p>这是 multi-layer feature 经过 fc 投影的结果。输入 token embedding 为：</p>
+\[\mathbf{e}^{(0)} = \text{Embed}(x_{\text{shifted}}) \in \mathbb{R}^{B \times T \times d}\]
+<p>其中 \(x_{\text{shifted}}\) 是 input_ids 左移一位（使 step 0 预测 position 1 的 next-token）。</p>
+</div>
+
+<div class="step">
+<span class="step-label">Step 2 (TTT step 0)：Draft model 前传</span>
+\[\mathbf{h}^{(1)} = \text{DraftLayer}(\mathbf{e}^{(0)},\; \mathbf{h}^{(0)})\]
+<p>DecoderLayer 接收两个输入：input_embeds \(\mathbf{e}\) 和 hidden_states \(\mathbf{h}\)。内部 concat 后投影做 attention。KV cache 初始化。</p>
+</div>
+
+<div class="step">
+<span class="step-label">Step 3 (TTT step 0)：计算 loss</span>
+\[\text{logits}^{(0)} = W_{\text{lm}} \cdot \text{RMSNorm}(\mathbf{h}^{(1)})\]
+\[\mathcal{L}_0 = -\sum_k \text{mask}_k \sum_v p^t_{k+1}(v) \cdot \log \text{softmax}(\text{logits}^{(0)}_k)[v]\]
+<p>只对 loss_mask 有效位置计算。监督目标是「下一个 token 的 target 分布」（shifted by 1）。</p>
+</div>
+
+<div class="step">
+<span class="step-label">Step 4 (TTT step 1)：下一步输入 = 上一步输出</span>
+\[\mathbf{h}^{(1)}_{\text{input}} = \mathbf{h}^{(1)} \quad \text{(上一步的 hidden state 直接作为下一步 hidden input)}\]
+\[\mathbf{e}^{(1)} = \text{Embed}(x_{\text{shifted\_twice}})\]
+<p>input_ids 再左移一位。KV cache 已包含 step 0 的 key/value → step 1 能 attend to step 0。</p>
+</div>
+
+<div class="step">
+<span class="step-label">Step 5 (TTT step 1)：前传 + loss</span>
+\[\mathbf{h}^{(2)} = \text{DraftLayer}(\mathbf{e}^{(1)},\; \mathbf{h}^{(1)}_{\text{input}};\; \text{KV cache from step 0})\]
+\[\mathcal{L}_1 = \text{soft\_CE}(\text{logits}^{(1)},\; p^t_{k+2})\]
+<p>监督目标进一步 shift——step 1 预测的是「再下一个 token」的分布。</p>
+</div>
+
+<div class="step">
+<span class="step-label">一般化 (TTT step s)：</span>
+\[\mathbf{h}^{(s+1)} = \text{DraftLayer}(\mathbf{e}^{(s)},\; \mathbf{h}^{(s)};\; \text{KV cache from steps 0..s-1})\]
+\[\mathcal{L}_s = \text{soft\_CE}\bigl(\text{LMHead}(\mathbf{h}^{(s+1)}),\; p^t_{k+s+1}\bigr)\]
+<p>每步的监督目标 shift 一位。KV cache 逐步累积。</p>
+</div>
+</div>
+
+<h3>3.2 总 loss：带衰减的多步加权</h3>
+
+<div class="math-block">
+<span class="label">Total TTT loss</span>
+\[\mathcal{L}_{\text{total}} = \sum_{s=0}^{\gamma-1} \lambda^s \cdot \mathcal{L}_s\]
+</div>
+
+<p>其中 \(\lambda\) 是 step loss decay（DeepSpec 配置中 \(\lambda = 0.8\)）。</p>
+
+<div class="derivation">
+<div class="step">
+<span class="step-label">为什么要 decay？</span>
+<p>后续步骤的监督目标距离上下文越来越远，position mask 的有效 token 数也在减少（左移导致尾部溢出）。衰减避免后续步骤的噪声梯度主导训练。</p>
+</div>
+
+<div class="step">
+<span class="step-label">DeepSpec 实现细节</span>
+<p>配置：<code>ttt_length=7, step_loss_decay=0.8</code>。权重分别为：</p>
+\[1.0,\; 0.8,\; 0.64,\; 0.512,\; 0.41,\; 0.33,\; 0.26\]
+<p>Step 0 的梯度占主导，后续步骤逐渐成为辅助信号。</p>
+</div>
+</div>
+
+<h3>3.3 Loss Normalization</h3>
+
+<p>EAGLE3 使用 local mean normalization：每步 loss 除以 \(B \times T\)（local batch 的总 token 数），不除以全局有效 token 数。</p>
+
+<div class="math-block">
+<span class="label">Normalizer</span>
+\[\text{normalizer}_s = B \times T\]
+</div>
+
+<p>这确保每个序列对梯度的贡献相等（不论有效 token 数多少）。DeepSpec 代码中明确禁止了 "valid_token_mean" 模式——实验发现它让长序列主导梯度，导致 eval accept length 下降。</p>
+
+<h3>3.4 Fused Soft Cross-Entropy (Triton Kernel)</h3>
+
+<p>直接实现 soft CE 需要在 GPU 上 materialize 一个 \([B, T, V]\) 的 fp32 log-probs tensor。当 V=152k 时，这会占用大量显存（~2.3GB per batch per step）。</p>
+
+<p>EAGLE3/DeepSpec 使用 Triton fused kernel：forward 只保存 logits（detached）+ per-row (m, d) 两个标量；backward 直接在 logits 的 storage 上写梯度（in-place）。这消除了 \([B, T, V]\) 的中间 tensor。</p>
+
+<div class="math-block">
+<span class="label">Forward: numerically stable soft CE</span>
+\[\mathcal{L} = -\sum_v p^t(v) \cdot \bigl(\ell(v) - m - \log d\bigr), \quad m = \max_v \ell(v),\; d = \sum_v e^{\ell(v) - m}\]
+</div>
+
+<h3>3.5 RoPE Position with Cache Offset</h3>
+
+<p>TTT 的每一步共享同一组 position ids（都是 0, 1, ..., T-1），但通过 KV cache offset 让 attention 正确区分不同步骤：</p>
+
+<div class="math-block">
+<span class="label">SpecForge-style RoPE offset</span>
+\[\text{rope\_position\_ids}_s = \text{base\_position\_ids} + s\]
+</div>
+
+<p>其中 \(s\) = past_seen_tokens / q_len = 当前 TTT step index。这样 step s 的 query 和 step 0 的 key 之间的相对距离 = s，RoPE 编码正确。</p>
+
+<!-- ═══════════ Attention Mask ═══════════ -->
+<h2>4. EAGLE3 Attention Mask</h2>
+
+<p>TTT 训练时，attention mask 需要同时处理：</p>
+<ol>
+<li>同一步内的 causal mask（query 只看自己和之前位置）</li>
+<li>跨步的 KV cache（step s 能 attend to step 0..s-1 的所有位置）</li>
+<li>特殊结构：step s 在 KV 中的 offset 位置只能被 step s+1 以后的 query 看到</li>
+</ol>
+
+<p>DeepSpec 代码使用 flex_attention 实现：</p>
+
+<div class="math-block">
+<span class="label">EAGLE3 mask_mod</span>
+\[\text{mask}(b, h, q, kv) = \text{in\_valid\_query} \;\&\; (\text{causal\_mask} \;\|\; \text{suffix\_mask})\]
+</div>
+
+<p>其中：</p>
+<ul>
+<li>causal_mask: \(q \geq kv\) 且 \(kv \lt \text{seq\_len}\)（同一 chunk 内的 causal）</li>
+<li>suffix_mask: \(kv \geq q\_\text{len}\) 且 \((kv - q) \mod q\_\text{len} = 0\)（KV cache 中对应位置的匹配）</li>
+</ul>
+
+<!-- ═══════════ 性能 ═══════════ -->
+<h2>5. 性能与权衡</h2>
+
+<table>
+<tr><th></th><th>EAGLE</th><th>EAGLE2</th><th>EAGLE3</th></tr>
+<tr><td>Draft 层数</td><td>1</td><td>1</td><td>1（但有效深度 = TTT steps = 7）</td></tr>
+<tr><td>训练范式</td><td>Teacher forcing</td><td>Teacher forcing</td><td>TTT（训练=推理分布）</td></tr>
+<tr><td>Feature input</td><td>单层 (最后层)</td><td>单层</td><td>多层 (5 层 concat → fc)</td></tr>
+<tr><td>监督信号</td><td>Hard label CE</td><td>Hard label CE</td><td>Soft label CE (distillation)</td></tr>
+<tr><td>验证方式</td><td>Chain</td><td>Tree</td><td>Chain 或 Tree</td></tr>
+<tr><td>Accept length (Qwen3-4B)</td><td>—</td><td>—</td><td>3.61</td></tr>
+</table>
+
+<div class="key-insight">
+<strong>EAGLE3 为什么是 DSpark 的最直接对标</strong>：<br><br>
+EAGLE3 代表了 autoregressive drafter 的极致——通过 TTT 对齐训练/推理分布，通过 KV cache 累积实现有效多层。但它仍然是<strong>串行的</strong>：<br><br>
+\(T_{\text{draft}} = \gamma \times T_{\text{step}}\)，\(\gamma = 7\) 时需要 7 次串行前传。<br><br>
+DSpark 的并行 backbone 彻底消除了这个串行依赖——用 O(1) 前传 + O(γ) 的极轻量 Markov head 替代了 O(γ) 的重度串行前传。<br><br>
+在 per-user latency 维度，DSpark 完胜 EAGLE3（快 60-85%）。<br>
+在 acceptance rate 维度，DSpark 的 4.75 vs EAGLE3 的 3.61，也更高——因为 5 层 backbone 表达力 + Markov head 修复 suffix decay。
+</div>
+
+<!-- ═══════════ 小结 ═══════════ -->
+<h2>6. 小结</h2>
+
+<div class="key-insight">
+<strong>EAGLE3 的三个核心改进（相比 EAGLE/EAGLE2）</strong>：<br>
+① <strong>TTT</strong>：训练时模拟多步串行展开 → 彻底消除 exposure bias<br>
+② <strong>Multi-layer input</strong>：提取 target model 5 层 hidden state → 更丰富的语义信号<br>
+③ <strong>Soft distillation</strong>：匹配 target 的完整分布 → 直接优化 TV distance / acceptance rate<br><br>
+<strong>EAGLE3 是 autoregressive drafter 的上界</strong>：它已经做到了训练=推理、有效多层、full distillation。要进一步提速，必须打破串行依赖——这就是 DFlash/DSpark 的出发点（见 <a href="0004-dflash-parallel-drafter.html">Lesson 04</a> 和 <a href="0005-dspark-semi-autoregressive.html">Lesson 05</a>）。
+</div>
+
+<!-- ═══════════ Quiz ═══════════ -->
+<h2>7. Quiz</h2>
+
+<div class="quiz" data-answer="2">
+  <h4>Q1: EAGLE3 的 TTT 范式解决的核心问题是？</h4>
+  <label><input type="radio" name="q1" value="1"> Draft model 参数量不够导致的表达力瓶颈</label>
+  <label><input type="radio" name="q1" value="2"> Teacher forcing 训练和 autoregressive 推理之间的分布不匹配</label>
+  <label><input type="radio" name="q1" value="3"> Target model 的 hidden state 在深层信息丢失导致 draft 精度下降</label>
+  <div class="feedback correct">✓ 正确！EAGLE 用 teacher forcing 训练（输入真实 feature），推理时用自己的预测。TTT 让训练也用自己的预测 → 分布完全对齐，消除 exposure bias。</div>
+  <div class="feedback incorrect">✗ 参数量问题通过 KV cache 累积（有效多层）缓解。信息丢失通过 multi-layer input 解决。TTT 针对的是训练/推理分布不匹配（exposure bias）。</div>
+</div>
+
+<div class="quiz" data-answer="3">
+  <h4>Q2: EAGLE3 只有 1 层 decoder，为什么有效深度能达到 7？</h4>
+  <label><input type="radio" name="q2" value="1"> 使用 MoE 架构让单层具有多条路径选择能力</label>
+  <label><input type="radio" name="q2" value="2"> Multi-layer input 拼接了 5 层 target feature 等价于 5 层计算</label>
+  <label><input type="radio" name="q2" value="3"> TTT 的 7 步串行前传共享 KV cache，等价于 7 层 self-attention 累积</label>
+  <div class="feedback correct">✓ 正确！每一步的 KV cache 包含所有前序步骤的 key/value。Step 6 的 query 能 attend to step 0-5 的所有 hidden states → 等效于 7 层 decoder（每层看到前面所有层的输出）。</div>
+  <div class="feedback incorrect">✗ EAGLE3 不用 MoE。Multi-layer input 只是提供了更丰富的初始信号，不是有效深度的来源。有效深度来自 TTT 步骤间通过 KV cache 的信息累积。</div>
+</div>
+
+<div class="quiz" data-answer="1">
+  <h4>Q3: EAGLE3 使用 soft label 而非 hard label 的好处是？</h4>
+  <label><input type="radio" name="q3" value="1"> Soft label 包含 target 的完整概率分布，直接优化 TV distance 即 acceptance rate</label>
+  <label><input type="radio" name="q3" value="2"> Soft label 的梯度更平滑，训练收敛更快不会震荡</label>
+  <label><input type="radio" name="q3" value="3"> Soft label 允许 draft model 输出 uniform 分布时 loss 为零</label>
+  <div class="feedback correct">✓ 正确！Acceptance rate = \(1 - \text{TV}(p^d, p^t)\)。Soft CE 让 \(p^d\) 尽可能接近整个 \(p^t\) 分布（而非只对准 argmax），直接最小化 TV distance。</div>
+  <div class="feedback incorrect">✗ 梯度平滑性是次要效果。Uniform 分布对应最大 CE loss，不会为零。核心好处是：soft label 让 draft 学习完整分布形状，直接减小 TV distance = 提升 acceptance rate。</div>
+</div>
+
+<div class="followup">
+<strong>💬 有疑问？</strong> 问我关于 TTT 的内存开销分析、SpecForge-style RoPE offset 的细节、或 EAGLE3 vs DSpark 在不同场景下的 trade-off。至此 EAGLE 系列三节课完成——回到 <a href="0005-dspark-semi-autoregressive.html">Lesson 05</a> 重新阅读 DSpark 时，你会更清楚它每个设计决策针对的是 EAGLE3 的哪个瓶颈。
+</div>
+
+</body>
+</html>

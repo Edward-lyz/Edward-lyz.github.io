@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Reference: MiniMax M3 Architecture Cheatsheet</title>
+<style>
+  body { font-family: 'Courier New', monospace; max-width: 850px; margin: 2em auto; padding: 0 1.5em; color: #222; line-height: 1.5; font-size: 0.9em; }
+  h1 { font-size: 1.4em; border-bottom: 2px solid #000; }
+  h2 { font-size: 1.1em; margin-top: 1.8em; background: #f0f0f0; padding: 0.3em 0.5em; }
+  table { border-collapse: collapse; width: 100%; margin: 0.5em 0; }
+  th, td { border: 1px solid #999; padding: 0.3em 0.6em; font-size: 0.9em; }
+  th { background: #ddd; }
+  .formula { background: #f8f8f0; padding: 0.5em; margin: 0.5em 0; border-left: 3px solid #666; }
+  code { background: #eee; padding: 0.1em 0.3em; }
+</style>
+</head>
+<body>
+
+<h1>MiniMax M3 Architecture Cheatsheet</h1>
+
+<h2>Model Shape</h2>
+<table>
+<tr><th>Item</th><th>Value</th></tr>
+<tr><td>Total params</td><td>~428B</td></tr>
+<tr><td>Active params/token</td><td>~23B</td></tr>
+<tr><td>Hidden dim</td><td>6144</td></tr>
+<tr><td>Layers</td><td>60 (3 dense + 57 MoE+MSA)</td></tr>
+<tr><td>Vocab</td><td>200,064</td></tr>
+<tr><td>Max context</td><td>1,048,576 (1M)</td></tr>
+</table>
+
+<h2>Attention</h2>
+<table>
+<tr><th>Item</th><th>Value</th></tr>
+<tr><td>Q heads</td><td>64</td></tr>
+<tr><td>KV heads</td><td>4 (GQA ratio 16:1)</td></tr>
+<tr><td>Head dim</td><td>128</td></tr>
+<tr><td>RoPE dim</td><td>64 (partial, 50%)</td></tr>
+<tr><td>RoPE theta</td><td>5,000,000</td></tr>
+<tr><td>QK Norm</td><td>per-head RMS</td></tr>
+</table>
+
+<h2>MSA (Sparse Attention, Layer 3-59)</h2>
+<table>
+<tr><th>Item</th><th>Value</th></tr>
+<tr><td>Index Q heads</td><td>4</td></tr>
+<tr><td>Index K heads</td><td>1 (shared)</td></tr>
+<tr><td>Index head dim</td><td>128</td></tr>
+<tr><td>Block size</td><td>128 tokens</td></tr>
+<tr><td>Top-k blocks</td><td>16</td></tr>
+<tr><td>Local blocks</td><td>1</td></tr>
+<tr><td>Score type</td><td>max (per-block)</td></tr>
+<tr><td>Total attended</td><td>(16+1)×128 = 2176 tokens/query</td></tr>
+</table>
+
+<div class="formula">
+<strong>Sparsity ratio at 1M:</strong> 2176 / 1,048,576 ≈ 0.2%<br>
+<strong>Compute reduction:</strong> ~28.4× vs full attention
+</div>
+
+<h2>MoE (Layer 3-59)</h2>
+<table>
+<tr><th>Item</th><th>Value</th></tr>
+<tr><td>Routed experts</td><td>128</td></tr>
+<tr><td>Top-k</td><td>4</td></tr>
+<tr><td>Shared experts</td><td>1</td></tr>
+<tr><td>Expert FFN dim</td><td>3072</td></tr>
+<tr><td>Shared FFN dim</td><td>3072</td></tr>
+<tr><td>Scoring</td><td>sigmoid (not softmax)</td></tr>
+<tr><td>Routing bias</td><td>yes (e_score_correction_bias)</td></tr>
+<tr><td>Routed scaling</td><td>2.0</td></tr>
+</table>
+
+<h2>Dense Layers (0-2)</h2>
+<table>
+<tr><th>Item</th><th>Value</th></tr>
+<tr><td>FFN dim</td><td>12288 (2× hidden)</td></tr>
+<tr><td>Attention</td><td>Full GQA (no sparse)</td></tr>
+<tr><td>No MoE</td><td>single FFN</td></tr>
+</table>
+
+<h2>Weight Name Patterns</h2>
+<pre>
+language_model.model.embed_tokens.weight
+language_model.model.layers.{N}.input_layernorm.weight
+language_model.model.layers.{N}.self_attn.{q,k,v,o}_proj.weight
+language_model.model.layers.{N}.self_attn.{q,k}_norm.weight
+language_model.model.layers.{N}.self_attn.index_{q,k}_proj.weight  # MSA, layer 3+
+language_model.model.layers.{N}.self_attn.index_{q,k}_norm.weight  # MSA, layer 3+
+language_model.model.layers.{N}.block_sparse_moe.gate.weight       # MoE, layer 3+
+language_model.model.layers.{N}.block_sparse_moe.experts.{E}.w{1,2,3}.weight
+language_model.model.layers.{N}.block_sparse_moe.shared_experts.{gate,up,down}_proj.weight
+language_model.model.layers.{N}.block_sparse_moe.e_score_correction_bias
+language_model.model.layers.{N}.mlp.{gate,up,down}_proj.weight     # Dense, layer 0-2
+language_model.model.norm.weight
+language_model.lm_head.weight
+</pre>
+
+</body>
+</html>

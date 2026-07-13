@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Confidence Scheduler 动画演示</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: #1a1a2e;
+  color: #eee;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 1.5rem 1rem;
+}
+h1 { font-size: 1.3rem; margin-bottom: 0.3rem; }
+.subtitle { color: #8892b0; font-size: 0.8rem; margin-bottom: 1rem; }
+
+.stage {
+  width: 100%;
+  aspect-ratio: 2.5 / 1;
+  background: #0f0f23;
+  border-radius: 10px;
+  border: 1px solid #333;
+  position: relative;
+  overflow: hidden;
+}
+
+.token {
+  position: absolute;
+  padding: 0.3em 0.55em;
+  border-radius: 5px;
+  font-size: clamp(0.48rem, 1vw, 0.7rem);
+  font-weight: 600;
+  white-space: nowrap;
+  transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+  opacity: 0;
+  transform: scale(0.8);
+}
+.token.visible { opacity: 1; transform: scale(1); }
+.token.req { background: #475569; color: #e2e8f0; }
+.token.conf { background: #7c3aed; color: white; }
+.token.marginal { background: #d97706; color: white; }
+.token.selected { background: #16a34a; color: white; border: 2px solid #4ade80; }
+.token.cut { background: #dc2626; color: white; text-decoration: line-through; }
+.token.sps { background: #0891b2; color: white; }
+.token.throughput { background: #eab308; color: #1a1a2e; font-weight: 700; }
+
+.region {
+  position: absolute;
+  border-radius: 7px;
+  border: 1px solid;
+  transition: all 0.5s ease;
+  opacity: 0;
+}
+.region.visible { opacity: 1; }
+.region.batch { border-color: #64748b; background: rgba(100,116,139,0.08); }
+.region.greedy { border-color: #16a34a; background: rgba(22,163,74,0.08); }
+
+.region-label {
+  position: absolute;
+  font-size: clamp(0.45rem, 0.9vw, 0.58rem);
+  color: #8892b0;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  transition: opacity 0.5s;
+  opacity: 0;
+}
+.region-label.visible { opacity: 1; }
+
+.arrow {
+  position: absolute;
+  width: 0; height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 8px solid #64ffda;
+  transition: opacity 0.5s;
+  opacity: 0;
+}
+.arrow.visible { opacity: 1; }
+
+.desc {
+  width: 100%;
+  margin-top: 0.8rem;
+  padding: 0.8rem 1rem;
+  background: #16213e;
+  border-radius: 8px;
+  min-height: 70px;
+  font-size: clamp(0.72rem, 1.3vw, 0.85rem);
+  line-height: 1.6;
+  color: #ccd6f6;
+}
+.desc strong { color: #64ffda; }
+.desc .green { color: #4ade80; }
+.desc .yellow { color: #fbbf24; }
+.desc .red { color: #f87171; }
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  margin-top: 0.8rem;
+  width: 100%;
+}
+.controls button {
+  padding: 0.4rem 1.2rem;
+  border: 1px solid #64ffda;
+  background: transparent;
+  color: #64ffda;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  transition: all 0.2s;
+}
+.controls button:hover:not(:disabled) { background: #64ffda; color: #0f0f23; }
+.controls button:disabled { opacity: 0.3; cursor: not-allowed; }
+.controls .progress { color: #8892b0; font-size: 0.75rem; margin-left: auto; }
+</style>
+</head>
+<body>
+
+<h1>Confidence-Scheduled Verification</h1>
+<p class="subtitle">点击「下一步」观察 scheduler 如何贪心分配验证长度</p>
+
+<div class="stage" id="stage"></div>
+<div class="desc" id="desc"></div>
+<div class="controls">
+  <button type="button" id="prevBtn">&larr; 上一步</button>
+  <button type="button" id="nextBtn">下一步 &rarr;</button>
+  <span class="progress" id="progress"></span>
+  <button type="button" id="resetBtn" style="border-color:#8892b0; color:#8892b0;">重置</button>
+</div>
+
+<script>
+const stage = document.getElementById('stage');
+const desc = document.getElementById('desc');
+const prevBtn = document.getElementById('prevBtn');
+const nextBtn = document.getElementById('nextBtn');
+const resetBtn = document.getElementById('resetBtn');
+const progress = document.getElementById('progress');
+
+let currentStep = -1;
+const elements = {};
+
+function el(id, cls, text, xPct, yPct) {
+  const d = document.createElement('div');
+  d.className = 'token ' + cls;
+  d.textContent = text;
+  d.style.left = xPct + '%';
+  d.style.top = yPct + '%';
+  stage.appendChild(d);
+  elements[id] = d;
+}
+function region(id, cls, xPct, yPct, wPct, hPct) {
+  const d = document.createElement('div');
+  d.className = 'region ' + cls;
+  d.style.left = xPct + '%';
+  d.style.top = yPct + '%';
+  d.style.width = wPct + '%';
+  d.style.height = hPct + '%';
+  stage.appendChild(d);
+  elements[id] = d;
+}
+function lbl(id, text, xPct, yPct) {
+  const d = document.createElement('div');
+  d.className = 'region-label';
+  d.textContent = text;
+  d.style.left = xPct + '%';
+  d.style.top = yPct + '%';
+  stage.appendChild(d);
+  elements[id] = d;
+}
+function show() { for (let i=0;i<arguments.length;i++) { const e=elements[arguments[i]]; if(e) e.classList.add('visible'); } }
+function hide() { for (let i=0;i<arguments.length;i++) { const e=elements[arguments[i]]; if(e) e.classList.remove('visible'); } }
+function restyle(id, cls) { if(elements[id]) elements[id].className = 'token ' + cls + ' visible'; }
+function setText(id, t) { if(elements[id]) elements[id].textContent = t; }
+
+function buildScene() {
+  stage.innerHTML = '';
+  for (const k in elements) delete elements[k];
+
+  // SPS curve (conceptual)
+  lbl('lbl-sps', 'SPS(B) PROFILE', 68, 3);
+  el('sps1', 'sps', 'B=4 → 95 sps', 68, 9);
+  el('sps2', 'sps', 'B=6 → 88 sps', 68, 17);
+  el('sps3', 'sps', 'B=8 → 76 sps', 68, 25);
+  el('sps4', 'sps', 'B=10 → 62 sps', 68, 33);
+
+  // Requests with confidence heads
+  lbl('lbl-req', '3 个活跃 REQUESTS (R=3)', 2, 3);
+  // Req A: γ=5, confidences [0.95, 0.90, 0.82, 0.60, 0.30]
+  el('rA', 'req', 'Req A: anchor', 2, 12);
+  el('cA1','conf','c₁=.95', 14, 12);
+  el('cA2','conf','c₂=.90', 23, 12);
+  el('cA3','conf','c₃=.82', 32, 12);
+  el('cA4','conf','c₄=.60', 41, 12);
+  el('cA5','conf','c₅=.30', 50, 12);
+
+  // Req B: γ=5, confidences [0.92, 0.85, 0.70, 0.45, 0.20]
+  el('rB', 'req', 'Req B: anchor', 2, 24);
+  el('cB1','conf','c₁=.92', 14, 24);
+  el('cB2','conf','c₂=.85', 23, 24);
+  el('cB3','conf','c₃=.70', 32, 24);
+  el('cB4','conf','c₄=.45', 41, 24);
+  el('cB5','conf','c₅=.20', 50, 24);
+
+  // Req C: γ=5, confidences [0.98, 0.93, 0.88, 0.75, 0.55]
+  el('rC', 'req', 'Req C: anchor', 2, 36);
+  el('cC1','conf','c₁=.98', 14, 36);
+  el('cC2','conf','c₂=.93', 23, 36);
+  el('cC3','conf','c₃=.88', 32, 36);
+  el('cC4','conf','c₄=.75', 41, 36);
+  el('cC5','conf','c₅=.55', 50, 36);
+
+  // Marginal gain labels
+  lbl('lbl-mg', 'MARGINAL GAIN: Δa × SPS(B+1) − a_prev × [SPS(B)−SPS(B+1)]', 2, 48);
+
+  // Greedy selection
+  el('mg1','marginal','① C:pos1 Δ=+0.98 → B=4', 2, 55);
+  el('mg2','marginal','② A:pos1 Δ=+0.95 → B=5', 2, 63);
+  el('mg3','marginal','③ B:pos1 Δ=+0.92 → B=6', 2, 63);
+  el('mg4','marginal','④ C:pos2 Δ=+0.91 → B=7', 25, 55);
+  el('mg5','marginal','⑤ A:pos2 Δ=+0.86 → B=8', 25, 63);
+  el('mg6','marginal','⑥ B:pos2 Δ=+0.78 → ...', 25, 71);
+  el('mg7','marginal','⑦ C:pos3 Δ=+0.80 STOP', 50, 55);
+
+  // Final allocation
+  el('alloc','throughput','结果: ℓ_A=2, ℓ_B=2, ℓ_C=3 → B=3+(2+2+3)=10', 2, 82);
+  el('theta','throughput','Θ = τ·SPS(10) = (1+0.95+0.86 + 1+0.92+0.78 + 1+0.98+0.91+0.80)·62 = ...', 2, 90);
+}
+
+const steps = [
+  {
+    action() { show('lbl-req','rA','rB','rC'); },
+    desc: '<strong>Step 1 — 问题设定</strong>：当前 batch 有 R=3 个活跃 request。每个 request 的 drafter 已完成 block 生成（&gamma;=5），confidence head 已预测每个位置的条件接受概率 c_k。Scheduler 要决定：每个 request 验证多少个 token？'
+  },
+  {
+    action() { show('cA1','cA2','cA3','cA4','cA5','cB1','cB2','cB3','cB4','cB5','cC1','cC2','cC3','cC4','cC5'); },
+    desc: '<strong>Step 2 — Confidence 预测</strong>：每个位置的 c_k 表示"在前面全接受的前提下该位置被接受的条件概率"。例如 Req C 整体很高，Req A/B 后两位偏低。Scheduler 利用这些 c_k 做决策。'
+  },
+  {
+    action() { show('lbl-sps','sps1','sps2','sps3','sps4'); },
+    desc: '<strong>Step 3 — SPS profile</strong>：预先 profile 的硬件吞吐曲线。随 batch token 数 B 增大，SPS 单调递减（GPU 饱和）。B=4→95 sps; B=10→62 sps。验证越多 token → B 越大 → 每步越慢。'
+  },
+  {
+    action() { show('lbl-mg'); },
+    desc: '<strong>Step 4 — 目标函数</strong>：最大化系统吞吐 &Theta;=&tau;&middot;SPS(B)。每多验证 1 个 token，&tau; 增加 a_k（prefix survival），但 B+1 → SPS 下降。贪心选择：每次选 <span class="green">边际收益最大</span> 的那个 (request, position) 对加入验证。'
+  },
+  {
+    action() { show('mg1'); restyle('cC1','selected'); },
+    desc: '<strong>Step 5 — 贪心第①步</strong>：初始 B=3（每个 request 的 anchor）。所有 request 的 pos1 竞争。Req C 的 a₁=0.98 最大 → 选中。B=4。<span class="green">C:pos1 入选</span>。'
+  },
+  {
+    action() { show('mg2'); restyle('cA1','selected'); },
+    desc: '<strong>Step 6 — 贪心第②步</strong>：Req A 的 a₁=0.95 排第二 → 选中。B=5。'
+  },
+  {
+    action() { show('mg3'); restyle('cB1','selected'); },
+    desc: '<strong>Step 7 — 贪心第③步</strong>：Req B 的 a₁=0.92 → 选中。B=6。现在所有 request 至少验证 1 个 token。接下来比较各 request 的 pos2。'
+  },
+  {
+    action() { show('mg4'); restyle('cC2','selected'); },
+    desc: '<strong>Step 8 — 贪心第④步</strong>：C 的 a₂=0.98&times;0.93=0.91，A 的 a₂=0.95&times;0.90=0.86，B 的 a₂=0.92&times;0.85=0.78。C 最大 → <span class="green">C:pos2 入选</span>。B=7。'
+  },
+  {
+    action() { show('mg5'); restyle('cA2','selected'); },
+    desc: '<strong>Step 9 — 贪心第⑤步</strong>：A 的 a₂=0.86 > B 的 a₂=0.78 → <span class="green">A:pos2 入选</span>。B=8。'
+  },
+  {
+    action() { show('mg6'); restyle('cB2','selected'); },
+    desc: '<strong>Step 10 — 贪心第⑥步</strong>：B 的 a₂=0.78 → 选中。B=9。现在看 pos3：C 的 a₃=0.80，A 的 a₃=0.70，B 的 a₃=0.55。'
+  },
+  {
+    action() { show('mg7'); restyle('cC3','selected'); restyle('cA3','cut'); restyle('cA4','cut'); restyle('cA5','cut'); restyle('cB3','cut'); restyle('cB4','cut'); restyle('cB5','cut'); restyle('cC4','cut'); restyle('cC5','cut'); },
+    desc: '<strong>Step 11 — STOP</strong>：C:pos3 的 a₃=0.80 入选后 B=10。此时边际收益 < 0（SPS 下降太快抵消了 &tau; 增加）→ <span class="red">停止贪心</span>。A:pos3+/B:pos3+/C:pos4+ 全部丢弃。'
+  },
+  {
+    action() { show('alloc','theta'); },
+    desc: '<strong>Step 12 — 最终分配</strong>：&ell;_A=2, &ell;_B=2, &ell;_C=3。总 B=3+7=10 token。Target 一次前传处理 10 个 token，预计产出 &tau;=sum of accepted lengths &times; SPS(10) → 最大化系统吞吐。<span class="yellow">注意：分配不均匀——质量高的 request (C) 验证更长。</span>'
+  },
+];
+
+function applyStep(idx) {
+  buildScene();
+  for (let i=0;i<=idx;i++) steps[i].action();
+  desc.innerHTML = steps[idx].desc;
+  progress.textContent = (idx+1)+' / '+steps.length;
+  prevBtn.disabled = idx <= 0;
+  nextBtn.disabled = idx >= steps.length-1;
+}
+function reset() {
+  currentStep = -1;
+  buildScene();
+  desc.innerHTML = '点击「下一步」观察 scheduler 的贪心分配过程。展示 3 个 request 竞争有限 batch capacity 的场景。';
+  progress.textContent = '0 / '+steps.length;
+  prevBtn.disabled = true;
+  nextBtn.disabled = false;
+}
+
+nextBtn.addEventListener('click', () => { if(currentStep<steps.length-1) { currentStep++; applyStep(currentStep); } });
+prevBtn.addEventListener('click', () => { if(currentStep>0) { currentStep--; applyStep(currentStep); } });
+resetBtn.addEventListener('click', reset);
+reset();
+</script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+{
+  "title": "aiak_ds_tool 模拟器显存计算逻辑",
+  "lessons": [
+    {
+      "title": "Lesson 01: LLM 推理显存公式推导",
+      "path": "lessons/0001-memory-formula-derivation.html"
+    }
+  ],
+  "references": [
+    {
+      "title": "推理显存公式速查表",
+      "path": "reference/memory-formula-cheatsheet.html"
+    }
+  ]
+}

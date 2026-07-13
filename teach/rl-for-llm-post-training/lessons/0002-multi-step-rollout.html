@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 02 — 多步决策与 Rollout</title>
+<link rel="stylesheet" href="../assets/rl-course.css">
+<script src="../assets/quiz.js" defer></script>
+</head>
+<body>
+
+<p class="lesson-number">Lesson 02</p>
+<h1>多步决策与 Rollout</h1>
+<p class="subtitle">从一步选择扩展到生成一整段文本</p>
+
+<!-- ====== SECTION 1 ====== -->
+<h2>1. 上一课的局限</h2>
+
+<p>上一课讲了一步选择：选一个选项，拿一个分数。但 LLM 不是选择题——它一次生成几百个 token。</p>
+
+<p>问题变成：<strong>一串连续动作的策略梯度怎么算？</strong></p>
+
+<!-- ====== SECTION 2 ====== -->
+<h2>2. Trajectory：一串动作的完整记录</h2>
+
+<p>把模型从开始到结束的完整执行过程叫做一条 <strong>trajectory</strong>（轨迹）：</p>
+
+<div class="math-block">
+τ = (s₀, a₀, s₁, a₁, s₂, a₂, ... , s<sub>T</sub>)
+</div>
+
+<p>对 LLM 来说：</p>
+
+<table class="vocab-table">
+<tr><th>符号</th><th>在 LLM 中是什么</th></tr>
+<tr><td>s₀</td><td>用户 prompt</td></tr>
+<tr><td>a₀</td><td>第一个生成的 token</td></tr>
+<tr><td>s₁</td><td>prompt + 第一个 token（新的上下文）</td></tr>
+<tr><td>a₁</td><td>第二个生成的 token</td></tr>
+<tr><td>...</td><td>不断扩展</td></tr>
+<tr><td>s<sub>T</sub></td><td>完整的 prompt + 回答</td></tr>
+</table>
+
+<p>每一步的「状态」就是当前已有的全部文本，「动作」就是下一个 token。</p>
+
+<!-- ====== SECTION 3 ====== -->
+<h2>3. Rollout：用当前策略实际跑一条 trajectory</h2>
+
+<div class="key-insight">
+<p><strong>Rollout = 让模型按当前参数 θ，实际生成一条完整输出。</strong><br><br>
+不是假设、不是计算、不是查表——是真的让模型跑一遍，产生实际的 token 序列。</p>
+</div>
+
+<p>为什么要强调「实际跑」？因为 policy gradient 公式中的期望：</p>
+
+<div class="math-block">
+∇<sub>θ</sub> J = E<sub>τ~π<sub>θ</sub></sub> [ R(τ) · ∇<sub>θ</sub> log π<sub>θ</sub>(τ) ]
+</div>
+
+<p>没法精确计算（动作空间太大），只能用采样近似。每一条 rollout 就是一个样本。</p>
+
+<!-- ====== SECTION 4 ====== -->
+<h2>4. 序列概率 = 条件概率的乘积</h2>
+
+<p>自回归 LLM 的核心性质：</p>
+
+<div class="math-block">
+π<sub>θ</sub>(y₁, y₂, ..., y<sub>T</sub> | x) = π<sub>θ</sub>(y₁|x) · π<sub>θ</sub>(y₂|x,y₁) · π<sub>θ</sub>(y₃|x,y₁,y₂) · ...
+</div>
+
+<p>简写为：</p>
+
+<div class="math-block">
+π<sub>θ</sub>(y|x) = ∏<sub>t=1</sub><sup>T</sup> π<sub>θ</sub>(y<sub>t</sub> | x, y<sub>&lt;t</sub>)
+</div>
+
+<p>这不是 RL 的假设，是自回归模型本身的数学结构。取 log 后乘积变求和：</p>
+
+<div class="math-block">
+log π<sub>θ</sub>(y|x) = Σ<sub>t=1</sub><sup>T</sup> log π<sub>θ</sub>(y<sub>t</sub> | x, y<sub>&lt;t</sub>)
+</div>
+
+<!-- ====== SECTION 5 ====== -->
+<h2>5. 多步 Policy Gradient</h2>
+
+<p>把序列概率代入 policy gradient 公式：</p>
+
+<div class="math-block" style="border: 2px solid var(--accent); background: #fff8f8;">
+∇<sub>θ</sub> J = E<sub>y~π<sub>θ</sub></sub> [ R(x, y) · Σ<sub>t</sub> ∇<sub>θ</sub> log π<sub>θ</sub>(y<sub>t</sub> | x, y<sub>&lt;t</sub>) ]
+</div>
+
+<p>和上一课的一步公式对比：</p>
+
+<table>
+<tr><th>一步</th><th>多步</th></tr>
+<tr><td>E[ R(a) · ∇log π(a) ]</td><td>E[ R(y) · Σ<sub>t</sub> ∇log π(y<sub>t</sub>|...) ]</td></tr>
+<tr><td>采样一个动作</td><td>采样一整条序列（rollout）</td></tr>
+<tr><td>一个 reward</td><td>整条序列结束后一个 reward</td></tr>
+</table>
+
+<p>结构完全一样，只是把「一个动作」换成了「一串动作的乘积」。</p>
+
+<!-- ====== SECTION 6 ====== -->
+<h2>6. 实际训练的近似</h2>
+
+<p>期望不可能精确算（所有可能的输出序列数量是天文数字）。实际做法是采样 N 条 rollout 取平均：</p>
+
+<div class="math-block">
+∇<sub>θ</sub> J ≈ (1/N) Σ<sub>i=1</sub><sup>N</sup> R<sub>i</sub> · Σ<sub>t</sub> ∇<sub>θ</sub> log π<sub>θ</sub>(y<sub>i,t</sub> | x, y<sub>i,&lt;t</sub>)
+</div>
+
+<p>这就是为什么：</p>
+
+<div class="key-insight">
+<p><strong>没有 rollout，就没有办法估计 policy gradient。</strong><br><br>
+Rollout 不是可选的辅助手段，它是 on-policy RL 梯度估计的数学必需品。</p>
+</div>
+
+<!-- ====== SECTION 7 ====== -->
+<h2>7. 长序列的困难：credit assignment</h2>
+
+<p>假设模型生成了 500 个 token，最后测试通过了，reward = 1。</p>
+
+<p>公式会给这 500 个 token <strong>全部</strong>乘以 R=1：</p>
+
+<pre><code>token 1: ∇log π(y₁) × 1  ← 有用吗？
+token 2: ∇log π(y₂) × 1  ← 有用吗？
+...
+token 237: ∇log π(y₂₃₇) × 1  ← 这个可能是关键修复
+...
+token 500: ∇log π(y₅₀₀) × 1  ← 可能只是收尾</code></pre>
+
+<p>所有 token 得到同样的 reward 加权，但不是所有 token 都同样重要。这就是 <strong>credit assignment 问题</strong>：500 步里到底是哪一步起了作用？</p>
+
+<p>这个问题后面会用 value function 和 advantage 来缓解（Lesson 03 内容）。</p>
+
+<!-- ====== SECTION 8 ====== -->
+<h2>8. 三种 rollout 的区分</h2>
+
+<p>回到 GPT Pro 分析中的关键区分：</p>
+
+<table>
+<tr><th>类型</th><th>谁生成</th><th>用途</th></tr>
+<tr><td>Teacher rollout</td><td>Claude 或其他教师模型</td><td>SFT 冷启动、离线蒸馏</td></tr>
+<tr><td>RL rollout</td><td>当前正在训练的模型自己</td><td>Policy gradient 梯度估计</td></tr>
+<tr><td>OPD rollout</td><td>Student 生成，Teacher 在 student 的状态上指导</td><td>On-policy distillation</td></tr>
+</table>
+
+<div class="key-insight">
+<p>「不再需要 Claude 的 rollout」≠「不再需要 rollout」。<br><br>
+前者说的是不再需要教师生成示范；后者如果成立，就意味着 on-policy RL 本身停止了。两者是完全不同的命题。</p>
+</div>
+
+<!-- ====== QUIZ ====== -->
+<div class="quiz-container">
+<h3>检验理解 ✍️</h3>
+<p>假设一个 LLM 对同一个 prompt 生成了 4 条 rollout，reward 分别是 [0, 0, 0, 0]。此时 policy gradient 的估计值是多少？</p>
+
+<div class="quiz-option" data-correct="true" data-explanation="正确。R=0 时，R·∇log π = 0。四条都是零，平均还是零。模型得不到任何方向信息。">零向量，模型从这批数据学不到任何方向</div>
+<div class="quiz-option" data-correct="false" data-explanation="负的梯度需要 R<0。这里 R=0 不是负数。">负方向，因为全失败说明当前策略差，应该反向更新</div>
+<div class="quiz-option" data-correct="false" data-explanation="熵正则项可能产生更新，但 policy gradient 本身为零。这题问的是 policy gradient 估计值。">取决于模型内部的 entropy 项，不一定为零</div>
+<div class="quiz-option" data-correct="false" data-explanation="Policy gradient 不需要正负对比才能工作。只要 R≠0 就有信号。问题在于这里 R 确实=0。">无法确定，必须有正有负的 reward 才能计算梯度</div>
+
+<div class="quiz-feedback"></div>
+</div>
+
+<!-- ====== SECTION 9 ====== -->
+<h2>9. 本课小结</h2>
+
+<ol>
+<li><strong>Trajectory</strong> = 完整的状态-动作序列</li>
+<li><strong>Rollout</strong> = 用当前策略实际生成一条 trajectory</li>
+<li><strong>多步 policy gradient</strong> = R · Σ ∇log π(y<sub>t</sub>|...)，结构和一步相同</li>
+<li><strong>On-policy RL 必须有 rollout</strong>，这是梯度估计的数学需求</li>
+<li><strong>Credit assignment</strong>：长序列里每个 token 都被乘以同一个 R，这很粗糙</li>
+</ol>
+
+<p>下一课解决第 5 点：怎么用 value function 和 advantage 给不同 token 分配不同的「功劳」。</p>
+
+<!-- ====== PRIMARY SOURCE ====== -->
+<h2>推荐阅读</h2>
+<p><a href="https://spinningup.openai.com/en/latest/spinningup/rl_intro3.html">Spinning Up: Intro to Policy Optimization</a> §"Don't Let the Past Distract You" 解释了为什么时刻 t 的梯度只应该乘以 t 之后的 reward，这正是 credit assignment 的第一步改进。</p>
+
+<div class="ask-teacher">
+<strong>💬 有疑问？</strong> 如果「序列概率=条件概率乘积」或「为什么全零 reward 导致零梯度」这些点不清楚，告诉我，我用更多例子展开。
+</div>
+
+<div class="nav-links">
+<a href="0001-rl-five-basics.html">← 上一课：五个基本概念</a>
+<a href="0003-variance-and-baseline.html">下一课：方差与 Baseline →</a>
+</div>
+
+</body>
+</html>

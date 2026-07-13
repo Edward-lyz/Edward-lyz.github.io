@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第一课：从进程边界进入 SGLang Scheduler</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script defer src="../assets/quiz.js"></script>
+</head>
+<body>
+
+<h1>从进程边界进入 SGLang Scheduler</h1>
+<p class="outcome">学完本课，你能在 SGLang v0.5.15 中定位 Scheduler process，追踪一次请求的 token 往返，并比较 normal 与 overlap event loop 的时间轴。</p>
+
+<h2>先纠正一张错误的心智图</h2>
+
+<p>最容易形成的错误印象是：HTTP Server 收到请求，然后把请求交给一个中央 Scheduler，Scheduler 再调用若干 GPU Worker。SGLang 的默认路径不是这个形状。对于 <code>dp_size=1</code>，Engine 会沿 <code>pp_rank × tp_rank</code> 启动 Scheduler processes；每个 Scheduler process 内部创建自己的 Model Worker，并在本进程里直接发起本 rank 的 forward。</p>
+
+<figure>
+  <div class="runtime-flow">
+    <div class="step">HTTP / TokenizerManager</div><div class="arrow">→</div><div class="step">ZMQ input</div>
+    <div class="step">Scheduler rank 0</div><div class="arrow">→</div><div class="step">request broadcast</div>
+    <div class="step">每个 Scheduler rank</div><div class="arrow">→</div><div class="step">本 rank Model Worker</div>
+    <div class="step">rank 0 output</div><div class="arrow">→</div><div class="step">Detokenizer / HTTP</div>
+  </div>
+  <figcaption>本课先固定 <code>dp=1, pp=1</code>。DP Attention 的 controller 与 rank ownership 在并行策略模块展开。</figcaption>
+</figure>
+
+<p>这个判断直接来自 Engine 的进程创建循环：它遍历 <code>pp_rank_range</code> 和 <code>tp_rank_range</code>，每个组合创建一个以 <code>run_scheduler_process</code> 为 target 的 <code>multiprocessing.Process</code>。只有 leader rank 建立外部 IPC socket，其余 rank 通过模型并行 group 接收同一批请求。<span class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/entrypoints/engine.py#L592-L674">engine.py:592-674</a>，<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/managers/scheduler_components/ipc_channels.py#L25-L72">ipc_channels.py:25-72</a>，<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/managers/scheduler_components/request_receiver.py#L56-L139">request_receiver.py:56-139</a>。</span></p>
+
+<div class="invariant">
+  <strong>进程不变量</strong>
+  SGLang 的 Scheduler 不是脱离 GPU rank 的中央控制器。默认模型并行路径中，每个 rank 都运行 Scheduler 状态机；leader 负责外部 I/O，所有 rank 必须对本轮 batch 得出一致的执行语义。
+</div>
+
+<h2>先把控制流与 token 流分开</h2>
+
+<pre><code>request path:
+HTTP → TokenizerManager → tokenized request → Scheduler
+
+compute path:
+Scheduler → Model Worker → logits / sampled token ids
+
+response path:
+Scheduler → BatchTokenIDOutput → DetokenizerManager
+          → BatchStrOutput → TokenizerManager → HTTP stream</code></pre>
+
+<p>Scheduler 的输出边界是 token ids，不是最终文本。DetokenizerManager 在独立 CPU 进程中维护增量 decode 状态，避免 Scheduler 等待字符串拼接与 UTF-8 边界处理。于是控制面负责 request 生命周期，GPU path 负责 tensor/KV，detokenizer path 负责文本增量；排障时必须先判断延迟发生在哪一段。<span class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/managers/detokenizer_manager.py#L91-L175">detokenizer_manager.py:91-175</a> 与 <a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/managers/tokenizer_manager.py#L1854-L1980">tokenizer_manager.py:1854-1980</a>。</span></p>
+
+<div class="invariant">
+  <strong>端到端延迟不是 GPU forward 的别名</strong>
+  TTFT 还包含 tokenize、IPC、waiting、admission、prefill、sample、detokenize 与回传。只有先固定 request 所在阶段，profiler 数字才有因果含义。
+</div>
+
+<h2>启动链只记六个节点</h2>
+
+<pre><code>sglang serve
+└─ cli.serve.serve
+   └─ launch_server.run_server
+      └─ http_server.launch_server
+         └─ Engine._launch_scheduler_processes
+            └─ run_scheduler_process
+               └─ Scheduler(...).run_event_loop()</code></pre>
+
+<p><code>run_scheduler_process</code> 做三件关键事：配置当前 rank，构造 <code>Scheduler</code>，把初始化信息发回 parent，然后阻塞在 <code>run_event_loop</code>。因此后续阅读必须区分两类代码：Engine 负责进程生命周期，Scheduler 负责运行时资源决策。<span class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/managers/scheduler.py#L4270-L4345">scheduler.py:4270-4345</a>。</span></p>
+
+<h2>Normal loop 是一条五阶段流水</h2>
+
+<p>先忽略 overlap、PD disaggregation 与 speculative decoding。<code>event_loop_normal</code> 的一次循环可以压缩成下面五步：</p>
+
+<pre><code>recv_reqs = request_receiver.recv_requests()
+process_input_requests(recv_reqs)
+batch = get_next_batch_to_run()
+result = run_batch(batch)
+process_batch_result(batch, result)</code></pre>
+
+<ol>
+  <li><code>recv_requests</code>：leader 从 ZMQ 拉取 tokenized requests，再让相关 ranks 看见同样的输入。</li>
+  <li><code>process_input_requests</code>：把 IPC payload 转成 Scheduler 内部状态，通常进入 waiting side。</li>
+  <li><code>get_next_batch_to_run</code>：基于 waiting、running、KV 空间和 forward mode，选出本轮唯一的 <code>ScheduleBatch</code>。</li>
+  <li><code>run_batch</code>：把调度结果转成 forward metadata，调用本进程内的 <code>model_worker.forward_batch_generation</code>。</li>
+  <li><code>process_batch_result</code>：把采样结果写回 request 状态，处理完成、输出、统计与下一轮所需信息。</li>
+</ol>
+
+<p><code>last_batch = batch</code> 不是普通日志字段。下一轮会把刚完成的 extend/prefill batch 过滤后并入 <code>running_batch</code>，所以 Scheduler 的状态转移跨越循环边界。后续 Scheduler 课程会沿这个连接点进入 prefill 与 decode 的选择逻辑。<span class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/managers/scheduler.py#L1533-L1561">scheduler.py:1533-1561</a>，<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/managers/scheduler.py#L2598-L2731">scheduler.py:2598-2731</a>，<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/managers/scheduler.py#L3191-L3260">scheduler.py:3191-3260</a>。</span></p>
+
+<div class="invariant">
+  <strong>调度不变量</strong>
+  Scheduler 每轮决定的是下一次 forward 执行什么，而不是某个 request 由哪张 GPU 从头执行到尾。一个 request 会以 <code>Req</code> 状态跨越多轮，并在不同轮进入 extend、decode、finished 或 retracted 路径。
+</div>
+
+<h2>Overlap 只改变时间轴，不改变选批语义</h2>
+
+<table>
+<thead><tr><th>Normal</th><th>Overlap</th></tr></thead>
+<tbody>
+<tr><td>forward N 完成后立刻处理 result N</td><td>提交 forward N 后处理 result N−1</td></tr>
+<tr><td>CPU result work 与 GPU 串行</td><td>CPU result work 与下一轮 GPU work 重叠</td></tr>
+<tr><td>直接使用当前 batch</td><td>保存 <code>batch.copy()</code> 与 result queue</td></tr>
+<tr><td>状态容易阅读</td><td>同一逻辑有一轮可见延迟</td></tr>
+</tbody>
+</table>
+
+<pre><code>normal:   GPU(N) → CPU-result(N) → GPU(N+1)
+overlap:  GPU(N) ───────────────→ GPU(N+1)
+                    CPU-result(N−1) ─────→</code></pre>
+
+<p><code>event_loop_overlap</code> 仍调用同一个 <code>get_next_batch_to_run</code>，所以 admission、prefill-first 与 retraction 不会凭空变成另一套策略。差别是当前 result 进入 <code>result_queue</code>，上一 batch 的副本才被 CPU 消费。某些 batch 必须关闭 overlap；例如连续 prefill 可选择先完成前一批结果以改善其 TTFT，DPA 下还必须使用全局一致的 mode 决策，避免 ranks 对 overlap 边界意见不同而 deadlock。<span class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/managers/scheduler.py#L1563-L1665">scheduler.py:1563-1665</a>。</span></p>
+
+<div class="invariant">
+  <strong>读 overlap trace 要错开一轮</strong>
+  当前 GPU batch、刚进入 result queue 的 result、正在 CPU 处理的上一 batch 是三个对象。把它们按同一轮编号会制造假的状态错乱。
+</div>
+
+<h2>最小自检</h2>
+
+<div class="quiz" data-answer="4">
+  <h3>固定 <code>dp_size=1</code>、<code>pp_size=1</code>、<code>tp_size=8</code>，Engine 默认启动多少个 Scheduler processes？</h3>
+  <label><input type="radio" name="q1" value="1">一个进程</label>
+  <label><input type="radio" name="q1" value="2">两个进程</label>
+  <label><input type="radio" name="q1" value="3">四个进程</label>
+  <label><input type="radio" name="q1" value="4">八个进程</label>
+  <div class="feedback correct" aria-live="polite">正确。Engine 对八个 TP ranks 各启动一个 Scheduler process。只有 leader 拥有面向 TokenizerManager 的外部 IPC，不等于系统只有一个 Scheduler。</div>
+  <div class="feedback incorrect" aria-live="polite">不对。进程数来自 <code>pp_rank_range × tp_rank_range</code>，这里是 <code>1 × 8</code>。leader 专属的是外部 I/O，不是 Scheduler process 本身。</div>
+</div>
+
+<div class="quiz" data-answer="2">
+  <h3>Overlap loop 在 GPU 执行 batch N 时，CPU 主要处理哪个 result？</h3>
+  <label><input type="radio" name="q1b" value="1">当前 batch N</label>
+  <label><input type="radio" name="q1b" value="2">上一 batch N−1</label>
+  <label><input type="radio" name="q1b" value="3">下一 batch N+1</label>
+  <label><input type="radio" name="q1b" value="4">任意历史 batch</label>
+  <div class="feedback correct" aria-live="polite">正确。当前 result 先进入 queue，CPU 消费上一 batch 的副本与 result；这是一轮错位。</div>
+  <div class="feedback incorrect" aria-live="polite">不对。Overlap 的关键是 GPU batch N 与 CPU result N−1 重叠，而不是并发修改同一个 batch。</div>
+</div>
+
+</body>
+</html>

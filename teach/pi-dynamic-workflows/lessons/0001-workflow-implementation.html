@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 01: pi-dynamic-workflows 实现原理 — 沙箱执行、subagent spawn 与编排原语</title>
+<style>
+:root { --text: #1a1a1a; --bg: #fefefe; --accent: #2563eb; --muted: #6b7280; --border: #e5e7eb; --code-bg: #f3f4f6; --highlight: #fef3c7; --success: #dcfce7; --danger: #fef2f2; }
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'Crimson Pro', 'Source Han Serif CN', Georgia, serif; color: var(--text); background: var(--bg); max-width: 780px; margin: 0 auto; padding: 2rem 1.5rem; line-height: 1.75; font-size: 17px; }
+h1 { font-size: 1.8rem; margin-bottom: 0.3rem; letter-spacing: -0.02em; }
+h2 { font-size: 1.35rem; margin-top: 2.8rem; margin-bottom: 0.8rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+h3 { font-size: 1.1rem; margin-top: 1.8rem; margin-bottom: 0.5rem; }
+p { margin-bottom: 1rem; }
+.subtitle { color: var(--muted); font-size: 0.95rem; margin-bottom: 2rem; }
+.formula-box { background: var(--code-bg); border-left: 3px solid var(--accent); padding: 1rem 1.2rem; margin: 1.2rem 0; font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.85rem; line-height: 1.8; overflow-x: auto; white-space: pre-wrap; }
+.key-insight { background: var(--highlight); border-radius: 4px; padding: 0.8rem 1rem; margin: 1rem 0; }
+.danger-box { background: var(--danger); border-left: 3px solid #ef4444; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 4px; }
+.success-box { background: var(--success); border-left: 3px solid #22c55e; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 4px; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 0.9rem; }
+th, td { border: 1px solid var(--border); padding: 0.5rem 0.7rem; text-align: left; }
+th { background: var(--code-bg); font-weight: 600; }
+code { font-family: 'JetBrains Mono', monospace; font-size: 0.83em; background: var(--code-bg); padding: 0.15em 0.4em; border-radius: 3px; }
+pre { background: var(--code-bg); padding: 1rem 1.2rem; margin: 1rem 0; border-radius: 6px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.82rem; line-height: 1.6; }
+.flow-diagram { background: var(--code-bg); padding: 1.2rem; border-radius: 8px; margin: 1.2rem 0; font-family: 'JetBrains Mono', monospace; font-size: 0.82rem; line-height: 1.8; white-space: pre; overflow-x: auto; }
+.toc { background: var(--code-bg); padding: 1rem 1.5rem; border-radius: 6px; margin: 1.5rem 0; }
+.toc ul { list-style: none; padding-left: 0; }
+.toc li { margin: 0.3rem 0; }
+.toc a { color: var(--accent); text-decoration: none; }
+.layer-card { border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.2rem; margin: 0.8rem 0; }
+.layer-card .layer-name { font-weight: 700; color: var(--accent); font-family: monospace; }
+.layer-card .layer-file { font-size: 0.8rem; color: var(--muted); font-family: monospace; }
+.quiz { background: #f0f4ff; border: 1px solid #c7d7f9; border-radius: 8px; padding: 1.2rem; margin: 2rem 0; }
+.quiz h3 { color: var(--accent); margin-bottom: 0.8rem; font-size: 1rem; }
+.quiz-q { margin-bottom: 0.8rem; font-weight: 600; }
+.quiz-options { list-style: none; padding: 0; }
+.quiz-options li { margin: 0.4rem 0; cursor: pointer; padding: 0.4rem 0.6rem; border-radius: 4px; border: 1px solid var(--border); background: white; }
+.quiz-options li:hover { background: var(--highlight); }
+.quiz-options li.correct { background: var(--success); border-color: #22c55e; }
+.quiz-options li.wrong { background: var(--danger); border-color: #ef4444; }
+.quiz-explain { display: none; margin-top: 0.8rem; font-size: 0.9rem; color: var(--muted); }
+.quiz-explain.show { display: block; }
+.nav { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--border); font-size: 0.9rem; color: var(--muted); }
+</style>
+</head>
+<body>
+
+<h1>pi-dynamic-workflows 实现原理</h1>
+<p class="subtitle">沙箱执行、subagent spawn 与编排原语 · 2026-06-18</p>
+
+<nav class="toc">
+<strong>目录</strong>
+<ul>
+<li><a href="#overview">总体架构</a></li>
+<li><a href="#extension-registration">Layer 1：Extension 注册</a></li>
+<li><a href="#script-parsing">Layer 2：Script 解析与验证</a></li>
+<li><a href="#sandbox">Layer 3：vm 沙箱执行</a></li>
+<li><a href="#subagent">Layer 4：Subagent Spawn</a></li>
+<li><a href="#primitives">Layer 5：编排原语</a></li>
+<li><a href="#determinism">为什么禁止 Date.now() / Math.random()</a></li>
+<li><a href="#quiz">检查理解</a></li>
+</ul>
+</nav>
+
+<h2 id="overview">总体架构</h2>
+
+<p>pi-dynamic-workflows 由 5 层组成，每层职责单一。理解每层干了什么，整个 workflow 执行流程就清楚了。</p>
+
+<div class="flow-diagram">用户问 Pi 一个需要多步的问题
+  ↓
+Pi 模型写一段 JS workflow script，调用 workflow tool
+  ↓
+workflow-tool.ts  ──  parseWorkflowScript()  ──  acorn AST 解析 + meta 提取
+  ↓
+runWorkflow()  ──  vm.createContext() 注入 globals
+  ↓
+vm.Script.runInContext()  ──  在沙箱里执行 script
+  ↓
+script 调用 agent(prompt)  ──  WorkflowAgent.run()
+  ↓
+createAgentSession()  ──  in-memory Pi session（fresh context）
+  ↓
+subagent 执行完毕，结果返回给父 workflow
+  ↓
+workflow 汇总所有结果，返回给 Pi 主模型</div>
+
+<p>源码入口：</p>
+<table>
+<tr><th>文件</th><th>职责</th></tr>
+<tr><td><code>extensions/workflow.ts</code></td><td>Pi extension 入口，注册 tool</td></tr>
+<tr><td><code>src/workflow-tool.ts</code></td><td>Pi tool 定义，schema、prompt guidelines、execute 逻辑</td></tr>
+<tr><td><code>src/workflow.ts</code></td><td>Script 解析（acorn）+ vm 沙箱运行时</td></tr>
+<tr><td><code>src/agent.ts</code></td><td>WorkflowAgent：spawn in-memory subagent</td></tr>
+<tr><td><code>src/display.ts</code></td><td>进度快照和文本渲染</td></tr>
+</table>
+
+<h2 id="extension-registration">Layer 1：Extension 注册</h2>
+
+<p>Pi extension 是一个默认导出函数，接收 <code>ExtensionAPI</code> 对象（简称 <code>pi</code>）。插件在这里注册 tool，并监听 <code>session_start</code> 事件确保 tool 被激活。</p>
+
+<div class="formula-box">// extensions/workflow.ts
+export default function extension(pi: ExtensionAPI) {
+  const workflowTool = createWorkflowTool();
+  pi.registerTool(workflowTool);          // 把 tool 注册进 Pi 的 tool 注册表
+
+  pi.on("session_start", () => {
+    const active = pi.getActiveTools();
+    if (!active.includes(workflowTool.name)) {
+      pi.setActiveTools([...active, workflowTool.name]);  // 确保每次新会话都激活
+    }
+  });
+}</div>
+
+<div class="key-insight">
+<strong>为什么需要 session_start 里再激活一次？</strong>
+<code>registerTool</code> 只是把 tool 加入候选池，Pi 可能不会自动把它放进当前会话的 active tool 列表。<code>session_start</code> 钩子确保每次新对话开始时 workflow tool 一定对 LLM 可见。
+</div>
+
+<h2 id="script-parsing">Layer 2：Script 解析与验证</h2>
+
+<p>Pi 模型返回一段 JS workflow script 字符串。在执行前，<code>parseWorkflowScript()</code> 用 <a href="https://github.com/acornjs/acorn">acorn</a>（标准 JS parser）解析 AST，做两件事：</p>
+
+<ol style="padding-left:1.5rem; margin-bottom:1rem;">
+<li><strong>提取 meta</strong>：第一条语句必须是 <code>export const meta = { name, description }</code>，通过 AST 静态求值，不 eval。</li>
+<li><strong>验证确定性</strong>：遍历整个 AST，如果发现 <code>Date.now()</code>、<code>new Date()</code> 或 <code>Math.random()</code> 就抛错。</li>
+</ol>
+
+<div class="formula-box">// workflow.ts — parseWorkflowScript()
+const ast = parse(script, { ecmaVersion: "latest", sourceType: "module", ... });
+assertDeterministicAst(ast);                    // 遍历 AST 检查非确定性调用
+const first = ast.body[0];                      // 第一条语句必须是 export const meta
+const meta = evaluateLiteral(declarator.init);  // 静态求值，不 eval，只允许字面量
+return { meta, body: script.slice(first.end) }; // body 是去掉 meta 声明后的剩余部分</div>
+
+<p><code>evaluateLiteral()</code> 是一个递归的白名单求值器，只处理 <code>Literal</code>、<code>ObjectExpression</code>、<code>ArrayExpression</code>，拒绝函数调用、spread、计算属性等。这保证了 meta 的值永远是可信静态数据。</p>
+
+<h2 id="sandbox">Layer 3：vm 沙箱执行</h2>
+
+<p>解析完成后，<code>runWorkflow()</code> 用 Node.js 原生 <code>vm</code> 模块创建一个隔离上下文，把 globals 注入进去，再在这个上下文里运行 script。</p>
+
+<div class="formula-box">// workflow.ts — runWorkflow()
+const context = vm.createContext({
+  agent, parallel, pipeline, log, phase,  // 编排原语
+  args, cwd, process,                     // 只读环境信息
+  budget,                                 // token 预算追踪
+  JSON, Math, Array, Object, ...          // 白名单的标准库
+  // 注意：没有 require、import、fs、fetch、Date
+});
+
+const wrapped = `(async () => {\n${body}\n})()`;
+const result = await new vm.Script(wrapped).runInContext(context);</div>
+
+<div class="key-insight">
+<strong>沙箱的边界</strong>：vm 隔离的是全局变量访问，不是内存。script 无法 <code>require()</code> 或 <code>import</code> 任何模块，也没有 <code>fs</code>、网络 API 或 <code>Date</code>。script 能做的事完全由注入的 globals 决定——这就是为什么 <code>agent()</code> 是唯一的"出口"。
+</div>
+
+<p>整个 script 被包裹在 <code>async () => {}</code> 里，所以 script 里可以直接 <code>await</code>，<code>runInContext</code> 返回一个 Promise，等待 script 执行完毕。</p>
+
+<h2 id="subagent">Layer 4：Subagent Spawn</h2>
+
+<p>script 调用 <code>agent(prompt)</code> 时，真正的执行发生在 <code>WorkflowAgent.run()</code>（<code>src/agent.ts</code>）：</p>
+
+<div class="formula-box">// agent.ts — WorkflowAgent.run()
+const { session } = await createAgentSession({
+  cwd: this.cwd,
+  agentDir,
+  sessionManager: SessionManager.inMemory(this.cwd),  // ← 关键：in-memory，fresh context
+  settingsManager: SettingsManager.create(this.cwd, agentDir),
+  customTools,                                         // coding tools + 可选 structured_output
+  ...this.sessionOptions,
+});
+
+await session.prompt(this.buildPrompt(prompt, options));  // 发一条消息给 subagent
+// 等待 subagent 完成，返回最后一条 assistant 文本（或 structured output）</div>
+
+<p>每个 <code>agent()</code> 调用都 <code>createAgentSession</code> 一次，产生一个完全独立的 Pi session：</p>
+
+<ul style="padding-left:1.5rem; margin-bottom:1rem;">
+<li><code>SessionManager.inMemory()</code>：session 不落盘，会话历史隔离，不继承父 session 的上下文。</li>
+<li>Subagent 拥有完整的 coding tools（读文件、运行 shell 等），可以独立工作。</li>
+<li>如果传了 <code>opts.schema</code>，还会注入一个 <code>structured_output</code> tool，subagent 的最后动作必须调用它，确保输出符合 JSON Schema。</li>
+</ul>
+
+<div class="key-insight">
+这和 <a href="/teach/subagent-design-philosophy/lessons/0001-subagent-design-philosophy.html">Subagent 设计哲学课</a>里讲的 <strong>fresh context</strong> 原则完全一致：每个 subagent 从空白状态出发，不受父 session 的 context pollution 影响，判断更准确。
+</div>
+
+<h2 id="primitives">Layer 5：编排原语</h2>
+
+<p>vm 沙箱里注入了三个编排原语。理解它们的实现，就能预测它们的行为。</p>
+
+<h3>agent(prompt, opts)</h3>
+
+<div class="formula-box">const agent = async (prompt, agentOptions = {}) => {
+  const run = limiter(async () => {      // 并发限制器：默认 max(1, CPU-2) 个，最多 16
+    state.agentCount++;
+    const result = await agentRunner.run(prompt, { ... });
+    state.spent += estimateTokens(result);
+    return result;
+  });
+  pendingAgentRuns.add(run);             // 追踪所有未完成的 agent，用于 abort
+  return run;                            // 返回 Promise，script 用 await 等待
+};</div>
+
+<p><strong>并发控制</strong>：<code>createLimiter(n)</code> 实现了一个简单的信号量队列，同时最多 <em>n</em> 个 subagent 在运行。超出的调用进队列等待。</p>
+
+<h3>parallel(thunks)</h3>
+
+<div class="formula-box">const parallel = async (thunks) => {
+  // thunks 是函数数组，不是 Promise 数组
+  return Promise.all(thunks.map(async (thunk, index) => {
+    try { return await thunk(); }
+    catch { log(`parallel[${index}] failed`); return null; }
+  }));
+};</div>
+
+<p>参数必须是 <strong>函数</strong>（<code>() => agent(...)</code>），不是 Promise。这是因为如果直接传 Promise，agent 在传入前就已经开始执行，无法受 limiter 控制。包成函数是延迟求值的标准做法。</p>
+
+<h3>pipeline(items, ...stages)</h3>
+
+<div class="formula-box">const pipeline = async (items, ...stages) => {
+  return Promise.all(items.map(async (item, index) => {
+    let value = item;
+    for (const stage of stages) {          // 每个 item 串行过所有 stage
+      value = await stage(value, item, index);
+    }
+    return value;
+  }));                                     // 不同 item 之间并发
+};</div>
+
+<p>同一个 item 在各 stage 之间是串行的（stage 2 必须等 stage 1 的结果），但不同 item 之间是并发的（item 1 和 item 2 可以同时在不同 stage 执行）。这是 fan-out/fan-in 的变体，适合"对每个文件做多步分析"这类任务。</p>
+
+<h2 id="determinism">为什么禁止 Date.now() / Math.random()</h2>
+
+<p>workflow script 是由 LLM 生成的，并且可能被存储、重放或审计。如果 script 依赖随机数或当前时间，每次执行结果不同，无法重现，也无法对比。</p>
+
+<div class="danger-box">
+<strong>更深层的原因</strong>：acorn 在解析时通过 AST 检查这些调用，而不是在运行时 patch。这意味着即使 script 里的 <code>Date.now()</code> 在条件分支里从未被执行到，也会在解析阶段就被拒绝。宁可误杀，不可放过。
+</div>
+
+<div class="success-box">
+<strong>合法替代</strong>：如果需要"时间"或"唯一标识"，把它放在 <code>args</code> 参数里由调用方传入，或者用 agent prompt 里的 <code>cwd</code> 拼出唯一路径。
+</div>
+
+<h2 id="quiz">检查理解</h2>
+
+<div class="quiz" id="q1">
+<h3>问题 1</h3>
+<p class="quiz-q">workflow script 里写 <code>await parallel([agent("a"), agent("b")])</code> 会发生什么？</p>
+<ul class="quiz-options" onclick="handleQuiz(event,'q1')">
+<li data-val="a">agent("a") 和 agent("b") 同时并发执行，返回结果数组</li>
+<li data-val="b" data-correct>parallel() 收到的是两个已启动的 Promise，两个 agent 已经绕过 limiter 开始运行，且 parallel() 会抛 TypeError</li>
+<li data-val="c">只有 agent("a") 执行，agent("b") 被忽略</li>
+<li data-val="d">workflow 被 vm 沙箱拦截，不执行任何 agent</li>
+</ul>
+<div class="quiz-explain">parallel() 期望接收函数（<code>() => agent(...)</code>），传入 Promise 会先启动 agent（绕过 limiter），然后 parallel() 内部检测到不是函数会抛 TypeError："parallel() expects an array of functions, not promises."</div>
+</div>
+
+<div class="quiz" id="q2">
+<h3>问题 2</h3>
+<p class="quiz-q">subagent 里有 <code>createAgentSession</code> 和 <code>SessionManager.inMemory()</code>，这意味着什么？</p>
+<ul class="quiz-options" onclick="handleQuiz(event,'q2')">
+<li data-val="a">subagent 的对话历史会保存到磁盘，可以跨会话复用</li>
+<li data-val="b" data-correct>subagent 从空白上下文启动，没有父 session 的历史，任务结束后内存被释放</li>
+<li data-val="c">subagent 继承父 session 的全部工具和上下文，只是独立运行</li>
+<li data-val="d">subagent 只能读文件，不能执行 shell 命令</li>
+</ul>
+<div class="quiz-explain">inMemory() 创建的 SessionManager 把会话历史存在内存里（不落盘），session.dispose() 调用后释放。每个 agent() 调用都是 fresh context，与 subagent-design-philosophy 里讲的 fresh vs fork 原则一致。</div>
+</div>
+
+<div class="quiz" id="q3">
+<h3>问题 3</h3>
+<p class="quiz-q">pipeline(items, stage1, stage2) 里，item1 的 stage1 和 item2 的 stage1 之间的关系是？</p>
+<ul class="quiz-options" onclick="handleQuiz(event,'q3')">
+<li data-val="a">item1 的 stage1 必须先完成，item2 的 stage1 才能开始（串行）</li>
+<li data-val="b" data-correct>item1 的 stage1 和 item2 的 stage1 并发执行（受 limiter 控制）</li>
+<li data-val="c">两个 stage1 顺序不确定，取决于 agent 响应速度</li>
+<li data-val="d">pipeline 不支持多个 item 并发，本质是串行</li>
+</ul>
+<div class="quiz-explain">pipeline 用 Promise.all(items.map(...)) 让不同 item 并发执行。每个 item 内部串行（stage1 → stage2），但 item1 和 item2 可以同时各自在 stage1 运行。并发度受全局 limiter 约束。</div>
+</div>
+
+<script>
+function handleQuiz(e, qId) {
+  const li = e.target.closest('li');
+  if (!li) return;
+  const container = document.getElementById(qId);
+  const options = container.querySelectorAll('.quiz-options li');
+  const explain = container.querySelector('.quiz-explain');
+  options.forEach(o => o.classList.remove('correct', 'wrong'));
+  if (li.dataset.correct) {
+    li.classList.add('correct');
+  } else {
+    li.classList.add('wrong');
+    options.forEach(o => { if (o.dataset.correct) o.classList.add('correct'); });
+  }
+  explain.classList.add('show');
+}
+</script>
+
+<div class="nav">
+<p>上一课：<a href="/teach/subagent-design-philosophy/lessons/0001-subagent-design-philosophy.html">Subagent 编排设计哲学</a> · 有疑问？直接问我，我是你的 Agent 老师。</p>
+<p>源码参考：<a href="https://www.npmjs.com/package/pi-dynamic-workflows"><code>pi-dynamic-workflows</code> npm package</a></p>
+</div>
+
+</body>
+</html>

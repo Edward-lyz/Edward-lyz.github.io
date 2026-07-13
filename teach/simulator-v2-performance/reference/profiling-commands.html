@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Reference: Python CPU Profiling 命令速查</title>
+<style>
+:root { --text: #1a1a1a; --bg: #fefefe; --accent: #2563eb; --muted: #6b7280; --border: #e5e7eb; --code-bg: #f3f4f6; }
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'JetBrains Mono', 'Fira Code', monospace; color: var(--text); background: var(--bg); max-width: 700px; margin: 0 auto; padding: 2rem 1.5rem; line-height: 1.6; font-size: 14px; }
+h1 { font-family: 'Crimson Pro', Georgia, serif; font-size: 1.5rem; margin-bottom: 1.5rem; }
+h2 { font-size: 1rem; margin-top: 2rem; margin-bottom: 0.5rem; color: var(--accent); border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+pre { background: var(--code-bg); padding: 0.8rem 1rem; margin: 0.5rem 0 1rem 0; border-radius: 4px; overflow-x: auto; font-size: 0.85rem; }
+p { margin-bottom: 0.6rem; font-family: 'Crimson Pro', Georgia, serif; font-size: 15px; }
+table { border-collapse: collapse; width: 100%; margin: 0.5rem 0 1.5rem 0; font-size: 0.85rem; }
+th, td { border: 1px solid var(--border); padding: 0.4rem 0.6rem; text-align: left; }
+th { background: var(--code-bg); }
+code { background: var(--code-bg); padding: 0.1em 0.3em; border-radius: 3px; font-size: 0.9em; }
+</style>
+</head>
+<body>
+
+<h1>Python CPU Profiling 命令速查</h1>
+
+<h2>cProfile</h2>
+<pre>
+# 生成 pstats 文件
+python3 -m cProfile -o /tmp/output.pstats -m module_name arg1 arg2
+
+# 读取 pstats → 按 cumtime 排序前 N 条
+python3 -c "
+import pstats
+s = pstats.Stats('/tmp/output.pstats')
+s.sort_stats('cumulative').print_stats(60)
+print('\n\n--- tottime ---')
+s.sort_stats('tottime').print_stats(60)
+" > /tmp/profile_top.txt
+
+# 转为 speedscope 格式
+pip install flameprof
+flameprof /tmp/output.pstats --format speedscope > /tmp/profile.json
+</pre>
+
+<h2>pyinstrument</h2>
+<pre>
+# HTML 输出（自带调用树）
+pyinstrument -r html -o /tmp/profile.html -m module_name arg1 arg2
+
+# speedscope JSON
+pyinstrument -r speedscope -o /tmp/profile.json -m module_name arg1 arg2
+
+# 保存 session（可后续重新渲染）
+pyinstrument --save-session /tmp/session.pyisession -m module_name ...
+
+# 从 session 重新生成输出
+pyinstrument --load-session /tmp/session.pyisession -r html -o /tmp/out.html
+</pre>
+
+<h2>speedscope 可视化</h2>
+<pre>
+# 在线查看（拖拽文件即可）
+open https://www.speedscope.app/
+
+# 本地安装
+npm install -g speedscope
+speedscope /tmp/profile.json
+</pre>
+
+<h2>Monkey-patch 验证缓存效果</h2>
+<pre>
+# 快速验证 cache 收益上界（不改源码）
+from functools import lru_cache
+import aiak_infer_tools.core.db_engine as db_mod
+
+_original_query = db_mod.DBEngine.query
+
+@lru_cache(maxsize=2048)
+def _cached_query(self, device, op, filters_key, backend, version):
+    filters = dict(filters_key) if filters_key else None
+    return _original_query(self, device, op, filters, backend, version)
+
+def patched_query(self, device, op, filters=None, backend=None, version=None):
+    filters_key = tuple(sorted(filters.items())) if filters else None
+    return _cached_query(self, device, op, filters_key, backend, version)
+
+db_mod.DBEngine.query = patched_query
+</pre>
+
+<h2>正确性验证</h2>
+<pre>
+# CSV bit-exact 比较
+cmp /tmp/baseline.csv /tmp/optimized.csv && echo "MATCH" || echo "DIFF"
+
+# 排序后比较（行顺序不稳定时）
+diff &lt;(sort /tmp/baseline.csv) &lt;(sort /tmp/optimized.csv)
+
+# 单元测试
+python3 -m pytest tests/ -x -q
+
+# 集成测试
+python3 -m pytest tests/integration/ -x -q
+</pre>
+
+<h2>常见 profile 指标含义</h2>
+<table>
+<tr><th>字段</th><th>含义</th></tr>
+<tr><td>ncalls</td><td>调用次数（a/b 表示递归 a 次，原始 b 次）</td></tr>
+<tr><td>tottime</td><td>函数自身耗时（不含子调用）</td></tr>
+<tr><td>cumtime</td><td>函数累计耗时（含子调用）</td></tr>
+<tr><td>percall</td><td>单次调用耗时（tottime/ncalls 或 cumtime/ncalls）</td></tr>
+</table>
+
+<h2>判断优化收益上界</h2>
+<pre>
+# duplicate_factor = ncalls / unique_keys
+# 如果 ≫ 1，缓存收益 ≈ (1 - 1/duplicate_factor) × 该函数 cumtime
+# 例如：45424 calls / 557 unique = 81x → 理论最大节省 98.8%
+</pre>
+
+</body>
+</html>

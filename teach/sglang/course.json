@@ -1,0 +1,103 @@
+{
+  "title": "SGLang Runtime Design",
+  "lessons": [
+    {
+      "title": "从进程边界进入 SGLang Scheduler",
+      "path": "lessons/0001-runtime-process-and-event-loop.html"
+    },
+    {
+      "title": "Req 与 ScheduleBatch 的双重生命周期",
+      "path": "lessons/0002-request-and-batch-lifecycle.html"
+    },
+    {
+      "title": "Prefill admission 与 token budget",
+      "path": "lessons/0003-prefill-admission-and-token-budget.html"
+    },
+    {
+      "title": "Chunked prefill 与 retraction",
+      "path": "lessons/0004-chunked-prefill-and-retraction.html"
+    },
+    {
+      "title": "两级 KV 索引",
+      "path": "lessons/0005-two-level-kv-indexing.html"
+    },
+    {
+      "title": "KV allocation 生命周期",
+      "path": "lessons/0006-kv-allocation-lifecycle.html"
+    },
+    {
+      "title": "Radix match、insert 与 lock",
+      "path": "lessons/0007-radix-match-insert-and-lock.html"
+    },
+    {
+      "title": "Radix eviction 与 Scheduler 耦合",
+      "path": "lessons/0008-radix-eviction-and-scheduler-coupling.html"
+    },
+    {
+      "title": "Parallel rank algebra",
+      "path": "lessons/0009-parallel-rank-algebra.html"
+    },
+    {
+      "title": "DP Attention 的 request、KV 与 collective ownership",
+      "path": "lessons/0010-dp-attention-ownership.html"
+    },
+    {
+      "title": "Expert Parallel 与 DeepEP",
+      "path": "lessons/0011-expert-parallel-and-deepep.html"
+    },
+    {
+      "title": "HiCache 的三级 KV 生命周期",
+      "path": "lessons/0012-hicache-tiering.html"
+    },
+    {
+      "title": "Prefill-Decode Disaggregation",
+      "path": "lessons/0013-pd-disaggregation.html"
+    },
+    {
+      "title": "端到端配置推导与实验矩阵",
+      "path": "lessons/0014-end-to-end-configurations.html"
+    },
+    {
+      "title": "从 v0.5.15 安全追踪 main",
+      "path": "lessons/0015-release-to-main-delta.html"
+    },
+    {
+      "title": "最终 Capstone：从请求到带 benchmark 的 hot-path 修改",
+      "path": "lessons/0016-final-capstone.html"
+    }
+  ],
+  "references": [
+    {
+      "title": "文章洞见与 SGLang v0.5.15 校正",
+      "path": "reference/article-insight-map.html"
+    },
+    {
+      "title": "SGLang v0.5.15 系统学习路径",
+      "path": "reference/course-index.html"
+    },
+    {
+      "title": "SGLang Runtime Failure Diagnosis Checklist",
+      "path": "reference/failure-diagnosis-checklist.html"
+    },
+    {
+      "title": "SGLang Runtime Glossary",
+      "path": "reference/glossary.html"
+    },
+    {
+      "title": "SGLang KV Ownership Map",
+      "path": "reference/kv-ownership-map.html"
+    },
+    {
+      "title": "SGLang Parallel Rank Worksheet",
+      "path": "reference/parallel-rank-worksheet.html"
+    },
+    {
+      "title": "SGLang v0.5.15 Runtime Map",
+      "path": "reference/runtime-map.html"
+    },
+    {
+      "title": "SGLang Scheduler State Map",
+      "path": "reference/scheduler-state-map.html"
+    }
+  ]
+}

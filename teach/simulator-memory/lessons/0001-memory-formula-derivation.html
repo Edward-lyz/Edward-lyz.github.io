@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 01: LLM 推理显存公式推导 — 从第一性原理到 MoE 模型</title>
+<style>
+:root { --text: #1a1a1a; --bg: #fefefe; --accent: #2563eb; --muted: #6b7280; --border: #e5e7eb; --code-bg: #f3f4f6; --highlight: #fef3c7; }
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'Crimson Pro', 'Source Han Serif CN', Georgia, serif; color: var(--text); background: var(--bg); max-width: 740px; margin: 0 auto; padding: 2rem 1.5rem; line-height: 1.7; font-size: 17px; }
+h1 { font-size: 1.8rem; margin-bottom: 0.3rem; letter-spacing: -0.02em; }
+h2 { font-size: 1.3rem; margin-top: 2.5rem; margin-bottom: 0.8rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+h3 { font-size: 1.1rem; margin-top: 1.5rem; margin-bottom: 0.5rem; }
+p { margin-bottom: 1rem; }
+.subtitle { color: var(--muted); font-size: 0.95rem; margin-bottom: 2rem; }
+.formula-box { background: var(--code-bg); border-left: 3px solid var(--accent); padding: 1rem 1.2rem; margin: 1.2rem 0; font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.88rem; line-height: 1.8; overflow-x: auto; }
+.key-insight { background: var(--highlight); border-radius: 4px; padding: 0.8rem 1rem; margin: 1rem 0; }
+.key-insight::before { content: "💡 "; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 0.9rem; }
+th, td { border: 1px solid var(--border); padding: 0.5rem 0.7rem; text-align: left; }
+th { background: var(--code-bg); font-weight: 600; }
+code { font-family: 'JetBrains Mono', monospace; font-size: 0.85em; background: var(--code-bg); padding: 0.15em 0.4em; border-radius: 3px; }
+.derivation { margin-left: 1.5rem; border-left: 2px solid var(--accent); padding-left: 1rem; }
+.derivation p { margin-bottom: 0.5rem; }
+.step { counter-increment: step; margin-bottom: 1.5rem; }
+.step::before { content: "Step " counter(step) ". "; font-weight: 700; color: var(--accent); }
+ol.steps { counter-reset: step; list-style: none; padding: 0; }
+.nav { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--border); font-size: 0.9rem; color: var(--muted); }
+.nav a { color: var(--accent); text-decoration: none; }
+.comparison-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1rem 0; }
+.comparison-card { border: 1px solid var(--border); border-radius: 6px; padding: 0.8rem; }
+.comparison-card h4 { font-size: 0.95rem; margin-bottom: 0.4rem; }
+.quiz { background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px; padding: 1rem; margin: 1.5rem 0; }
+.quiz summary { cursor: pointer; font-weight: 600; }
+.quiz p { margin-top: 0.5rem; }
+</style>
+</head>
+<body>
+
+<h1>Lesson 01: LLM 推理显存公式推导</h1>
+<p class="subtitle">从第一性原理到 MoE 模型 — 理解 aiak_ds_tool simulator 的显存计算核心</p>
+
+<h2>§1 核心问题</h2>
+<p>推理服务的核心约束：<strong>一张 GPU 卡能同时服务多少并发请求？</strong></p>
+<p>答案由显存决定。显存是固定的（如 H200 = 141GB），而占用显存的组成部分随 batch size 线性增长，所以存在一个 max_bs 上界。</p>
+
+<div class="formula-box">
+max_bs = remaining_mem / (kv_per_token × layers × tokens_per_request)
+<br><br>
+其中:
+<br>remaining_mem = total_available - hold - weights - cuda_graph
+<br>tokens_per_request = ctx_len + output_len
+</div>
+
+<p>这就是所有模型显存计算器的骨架。差异在于 <code>weights</code> 和 <code>kv_per_token</code> 的计算方式。</p>
+
+<h2>§2 显存的四大组成</h2>
+
+<table>
+<tr><th>组成部分</th><th>是否随 BS 变化</th><th>典型占比</th></tr>
+<tr><td>① 模型权重</td><td>❌ 固定</td><td>40-70%</td></tr>
+<tr><td>② KV Cache</td><td>✅ 线性增长</td><td>20-50%</td></tr>
+<tr><td>③ CUDA Graph</td><td>✅ 阶梯增长</td><td>3-8%</td></tr>
+<tr><td>④ 系统保留</td><td>❌ 固定</td><td>6-10%</td></tr>
+</table>
+
+<h3>2.1 可用显存基数</h3>
+<div class="formula-box">
+total_available = device.memory_size × 0.94
+</div>
+<p>乘 0.94 是经验系数：CUDA runtime、driver、fragmentation 等不可控开销约占 6%。<code>hold_mem</code>（默认 3GB）进一步预留给 activation buffer、临时张量等。</p>
+
+<h3>2.2 模型权重（固定部分）</h3>
+<p>这是最复杂的部分，因 MoE 架构而产生特殊处理。</p>
+
+<h4>Dense 模型（Qwen3）</h4>
+<p>简单直接：权重总量固定，TP 分片后除以 tp_size。</p>
+<div class="formula-box">
+weights = model_total_weights / tp_size
+</div>
+
+<h4>MoE 模型（DeepSeek V3/V4）</h4>
+<p>MoE 模型的权重分为两部分：</p>
+<ul style="margin: 0.5rem 0 1rem 1.5rem;">
+<li><strong>非 MoE 权重</strong>：Attention（q_a, q_b, wkv, o_proj）、Norm、Embedding 等 — 每张卡完整持有</li>
+<li><strong>MoE 专家权重</strong>：按 EP（Expert Parallel）均匀分片到各卡</li>
+</ul>
+
+<div class="key-insight">
+核心思路：用「实测单机单卡总权重」减去「该卡上 MoE 专家的 FP8 权重」，得到「非 MoE 权重」基准值。再根据实际 dtype 重新加回 MoE 部分。
+</div>
+
+<p><strong>推导过程（以 DeepSeek V3 为例）：</strong></p>
+<div class="derivation">
+<p>已知实测值：单机（8卡）target 模型，FP8 精度下，单卡显存占用 = 99GB</p>
+<p>单个 expert 单层 FP8 权重 = <code>inter_dim × hidden_dim × 3 / 1GB</code></p>
+<p>= <code>2048 × 7168 × 3 / (1024³)</code> ≈ 0.04101 GB</p>
+<p>V3 总专家数 = 256，单机 8 卡 → 单卡专家数 = 32</p>
+<p>V3 MoE 层数 = 58</p>
+<p>∴ 非 MoE 权重 = 99 − 0.04101 × 58 × 32 ≈ 99 − 76.1 ≈ 22.9 GB</p>
+</div>
+
+<p>当 dtype 改变（如 fp4）时：</p>
+<div class="formula-box">
+single_expert_layer = single_expert_layer_fp8 × moe_dtype_bytes
+expert_per_card = total_experts / (node_num × 8)
+target_weights = non_moe_weights + expert_per_card × single_expert_layer × moe_layers
+</div>
+
+<h4>V4 与 V3 的差异</h4>
+<table>
+<tr><th>参数</th><th>V3</th><th>V4</th></tr>
+<tr><td>总专家数</td><td>256</td><td>384</td></tr>
+<tr><td>inter_dim</td><td>2048</td><td>3072</td></tr>
+<tr><td>MoE 层数</td><td>58</td><td>58 (layer_num=61, mlp_layer_num=3)</td></tr>
+<tr><td>非 MoE 基准（FP8）</td><td>~99 GB/卡</td><td>~130 GB/卡</td></tr>
+<tr><td>默认 moe_dtype</td><td>FP8 (1.0)</td><td>FP4 (0.5)</td></tr>
+</table>
+<p>V4 非 MoE 基准更大，因为 head_dim 从 128→512，加了 HC（Hybrid Connector）副本等。</p>
+
+<h3>2.3 KV Cache（BS 线性部分）</h3>
+<p>这是决定 max_bs 的关键弹性项。</p>
+
+<h4>标准 MHA/GQA（Qwen3）</h4>
+<div class="formula-box">
+kv_per_token_per_layer = kv_head_num × head_dim × 2 × dtype_bytes
+<br>// × 2 因为 K 和 V 各一份
+</div>
+
+<h4>MLA 架构（DeepSeek V3）</h4>
+<p>DeepSeek 使用 Multi-head Latent Attention，KV 被压缩到低维 latent space：</p>
+<div class="formula-box">
+// 非 sparse 模式: 576 × 2 bytes/token/layer
+// sparse 模式: 771.2 bytes/token/layer (只存部分 head 的 KV)
+kv_per_token_per_layer = 576 × 2 / 1024³  // ≈ 1.07 × 10⁻⁶ GB
+</div>
+<p>576 = latent_dim（c_kv_dim），乘 2 是 K 和 V。Sparse 模式下部分 head 用 RoPE 不压缩，额外开销使总量变为 771.2 bytes。</p>
+
+<h4>V4 的分层 KV Cache</h4>
+<p>V4 引入 <code>compress_ratios</code>，不同层有不同压缩方式：</p>
+<table>
+<tr><th>层类型</th><th>compress_ratio</th><th>bytes/token/layer</th><th>说明</th></tr>
+<tr><td>SWA</td><td>0</td><td>~584</td><td>NopeFp8RopeBf16Pack</td></tr>
+<tr><td>C4</td><td>4</td><td>~1024</td><td>4 倍压缩 KV + indexer</td></tr>
+<tr><td>C128</td><td>128</td><td>~1024</td><td>全压缩 KV</td></tr>
+</table>
+<div class="formula-box">
+// V4 加权平均 KV Cache
+avg_kv = (swa_count × 584 + (c4_count + c128_count) × 1024) / total_layers
+</div>
+
+<h4>Hybrid Attention（MiniMax2.5）</h4>
+<p>只有 full_attn 层（62 层 GQA）产生 KV Cache，linear_attn 层不占 KV Cache：</p>
+<div class="formula-box">
+// 只对 full_attn_layer_num 层计算 KV
+kv_total = kv_per_token × full_attn_layer_num × total_tokens
+</div>
+
+<h3>2.4 CUDA Graph 开销</h3>
+<p>CUDA Graph capture 会为每个 batch size 段录制一份执行图，占用固定显存：</p>
+<div class="formula-box">
+graph_step = 8  // 每 8 个 BS 一个 graph
+graph_num = max_bs // graph_step
+graph_mem = graph_num × 0.176 GB  // 每个 graph ≈ 180MB
+</div>
+
+<div class="key-insight">
+CUDA Graph 显存形成循环依赖：graph_num 取决于 max_bs，而 max_bs 又受 graph_mem 影响。V1 解法：先不考虑 graph 算出初始 max_bs，用它估算 graph_mem，再扣除后重算。迭代一次即收敛。
+</div>
+
+<h3>2.5 MTP（Draft 模型）</h3>
+<p>Multi-Token Prediction 启用时，draft 模型的权重额外占用显存：</p>
+<div class="formula-box">
+// Draft 模型只有 1 层 MoE
+draft_weights = draft_non_moe + expert_per_card × single_expert_layer × 1
+
+// KV Cache 层数也要 +1（draft 层）
+kv_layers = main_layers + 1  // 61 + 1 = 62
+</div>
+
+<h2>§3 完整公式 — DeepSeek V3 为例</h2>
+
+<ol class="steps">
+<li class="step">
+<strong>可用显存</strong>
+<div class="formula-box">avail = device.memory_size × 0.94 − hold_mem</div>
+</li>
+<li class="step">
+<strong>权重显存</strong>
+<div class="formula-box">
+expert_fp8 = 2048 × 7168 × 3 / 1024³
+non_moe = 99 − expert_fp8 × 58 × 32
+expert_per_card = 256 / (node_num × 8)
+expert_actual = expert_fp8 × moe_dtype
+weights = non_moe + expert_per_card × expert_actual × 58
+if mtp: weights += draft_weights
+</div>
+</li>
+<li class="step">
+<strong>剩余显存</strong>
+<div class="formula-box">remaining = avail − weights</div>
+</li>
+<li class="step">
+<strong>初算 max_bs</strong>
+<div class="formula-box">
+kv_layers = 61 + int(mtp)
+max_tokens = remaining / (kv_per_token_per_layer × kv_layers)
+max_bs_raw = max_tokens / (ctx_len + output_len)
+</div>
+</li>
+<li class="step">
+<strong>扣除 CUDA Graph 后重算</strong>
+<div class="formula-box">
+graph_mem = (max_bs_raw // 8) × 0.176
+remaining -= graph_mem
+max_tokens = remaining / (kv_per_token_per_layer × kv_layers)
+max_bs = ceil(max_tokens / (ctx_len + output_len) / 8) × 8
+</div>
+</li>
+</ol>
+
+<h2>§4 四个模型的对比总结</h2>
+
+<table>
+<tr><th>维度</th><th>DeepSeek V3</th><th>DeepSeek V4</th><th>Qwen3</th><th>MiniMax2.5</th></tr>
+<tr><td>架构</td><td>MoE + MLA</td><td>MoE + MLA + HC</td><td>Dense</td><td>MoE + Hybrid Attn</td></tr>
+<tr><td>权重计算</td><td>实测基准减法</td><td>同左，参数更大</td><td>固定值/TP</td><td>固定值/节点</td></tr>
+<tr><td>KV Cache</td><td>MLA latent (576B)</td><td>分层加权平均</td><td>标准 GQA</td><td>仅 full_attn 层</td></tr>
+<tr><td>CUDA Graph</td><td>✅ 迭代扣除</td><td>✅ 迭代扣除</td><td>仅 overlap 时</td><td>❌ 不考虑</td></tr>
+<tr><td>MTP/Draft</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td></tr>
+<tr><td>BS 对齐</td><td>ceil 到 8</td><td>ceil 到 8</td><td>floor</td><td>floor</td></tr>
+</table>
+
+<h2>§5 迁移到 V2 的设计考量</h2>
+<p>V2 的架构关键差异：</p>
+<ul style="margin: 0.5rem 0 1rem 1.5rem;">
+<li><code>RuntimeContext</code> 已包含 <code>node_num</code>、<code>gpus_per_node</code>、<code>model_options</code></li>
+<li><code>Strategy</code> 体系可以 rewrite plan 和 compute_shape，但没有显存计算入口</li>
+<li><code>ModelPlan</code> 是纯拓扑结构，不含显存信息</li>
+<li>V2 没有 <code>memory_calculator</code> 概念，需要新增</li>
+</ul>
+
+<p>迁移时需要回答的设计问题（下一课展开）：</p>
+<ol style="margin: 0.5rem 0 1rem 1.5rem;">
+<li>显存计算是 Strategy 的职责，还是独立模块？</li>
+<li>权重基准值（99GB / 130GB）从哪里来？硬编码还是从 model.yaml 推导？</li>
+<li>max_bs 计算结果如何回流到 <code>RuntimeContext.shape.bs</code>？</li>
+</ol>
+
+<h2>§6 自测</h2>
+
+<div class="quiz">
+<details>
+<summary>Q1: 为什么 V1 用「实测基准 - 专家权重」而不是直接按参数量计算非 MoE 权重？</summary>
+<p>因为非 MoE 部分包含 embedding、norm、lora adapter、projection 等多种小组件，逐一计算容易遗漏且难以精确。用实测总值反减已知的 MoE 部分，是更可靠的工程做法。代价是需要一个 FP8 精度下的实测基准值。</p>
+</details>
+</div>
+
+<div class="quiz">
+<details>
+<summary>Q2: 为什么 CUDA Graph 的处理是「估算后扣除再重算」而不是解方程？</summary>
+<p>因为 graph_num = floor(max_bs / 8) 引入了取整运算，使得方程不连续，无法解析求解。但由于 graph 占比很小（通常 &lt;5%），一次迭代就足够收敛。</p>
+</details>
+</div>
+
+<div class="quiz">
+<details>
+<summary>Q3: MiniMax2.5 为什么不需要 CUDA Graph 扣除？</summary>
+<p>MiniMax2.5 的 calculator 是简化版本，可能实际部署中未使用 CUDA Graph 加速 decode（或其 graph 开销已被计入 hold_mem）。这是模型特定的工程决策，不是通用规则。</p>
+</details>
+</div>
+
+<div class="nav">
+<p><strong>Reference:</strong> <a href="../reference/memory-formula-cheatsheet.html">显存公式速查表</a></p>
+<p style="margin-top: 0.8rem;">有任何不清楚的地方，直接问我。我是你的 teacher，可以展开任何细节。</p>
+</div>
+
+</body>
+</html>

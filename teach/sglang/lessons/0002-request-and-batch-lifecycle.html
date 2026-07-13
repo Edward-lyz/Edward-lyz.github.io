@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第二课：Req 与 ScheduleBatch 的双重生命周期</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script defer src="../assets/quiz.js"></script>
+</head>
+<body>
+<h1>Req 与 ScheduleBatch 的双重生命周期</h1>
+<p class="outcome">学完本课，你能拿任意 request id，判断它当前属于 waiting、extend、running decode、finished 还是 retracted，并指出状态保存在哪个对象中。</p>
+
+<h2>先把两种生命周期分开</h2>
+<p><code>Req</code> 是跨 forward 存活的请求状态，持有输入、输出、采样参数、prefix match、request row、KV 长度与完成原因；<code>ScheduleBatch</code> 是一次 forward 的执行快照，持有本轮 requests、forward mode、flatten 后的 input、sequence lengths、KV 输出位置和采样 metadata。把二者混成一个概念，就会误以为 prefill batch 执行后已经消失的 request 也消失了。</p>
+<table>
+<thead><tr><th>问题</th><th><code>Req</code></th><th><code>ScheduleBatch</code></th></tr></thead>
+<tbody>
+<tr><td>寿命</td><td>从 Scheduler 接收直到 finish/abort</td><td>一次 model forward</td></tr>
+<tr><td>主要状态</td><td>token ids、prefix、KV ownership、finish</td><td>mode、batch tensors、forward metadata</td></tr>
+<tr><td>改变频率</td><td>每轮结果处理后累积改变</td><td>每轮重新构造或原地更新</td></tr>
+<tr><td>核心问题</td><td>这个请求已经走到哪一步</td><td>这一次 GPU 要执行什么</td></tr>
+</tbody>
+</table>
+<p class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/managers/schedule_batch.py#L666-L940">schedule_batch.py:666-940</a> 与 <a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/managers/schedule_batch.py#L1674-L1785">schedule_batch.py:1674-1785</a>。</p>
+
+<h2>正常 request 的主状态线</h2>
+<pre><code>IPC request
+  → handle_generate_request
+  → _add_request_to_queue
+  → waiting_queue
+  → get_new_batch_prefill → ScheduleBatch(EXTEND)
+  → process_batch_result
+  → 下一轮把 last_batch 合入 running_batch
+  → update_running_batch → ScheduleBatch(DECODE)
+  → ...多轮 decode...
+  → finish → cache_finished_req / release request row</code></pre>
+<p><code>handle_generate_request</code> 负责把外部请求变成内部 <code>Req</code>，完成长度、session、LoRA、cache key 等初始化；<code>_add_request_to_queue</code> 决定进入普通 waiting queue、grammar queue 或 feature-specific queue。本课程只追普通生成路径。<span class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/managers/scheduler.py#L2034-L2318">scheduler.py:2034-2318</a>。</span></p>
+
+<h2>最反直觉的边界在两轮之间</h2>
+<p>当前循环执行完 EXTEND 后，batch 被保存为 <code>last_batch</code>。下一次 <code>get_next_batch_to_run</code> 才过滤已经结束或仍需 chunk 的 requests，并把其余 requests 合入 <code>running_batch</code>。随后 Scheduler 仍先尝试构造新的 prefill；只有没有可运行的新 prefill 时，才对 <code>running_batch</code> 调用 <code>update_running_batch</code> 并执行 decode。</p>
+<pre><code>loop N:   EXTEND(A, B) ──result──→ last_batch
+loop N+1: filter(last_batch)
+          merge A, B into running_batch
+          try new EXTEND(C)
+          if none: DECODE(A, B)</code></pre>
+<div class="invariant"><strong>调度优先级不等于 request 优先级</strong>默认主干是本轮有可运行 prefill 就先执行 prefill，否则才执行 running decode。waiting queue 内部怎样排序，是另一个 policy 层问题。</div>
+<p class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/managers/scheduler.py#L2598-L2729">scheduler.py:2598-2729</a>。</p>
+
+<h2>用一张 ledger 跟踪同一个 request</h2>
+
+<table>
+<thead><tr><th>观察点</th><th><code>Req</code></th><th><code>ScheduleBatch</code></th><th>资源 ownership</th></tr></thead>
+<tbody>
+<tr><td>刚入队</td><td>输入与 sampling 已确定</td><td>无</td><td>可能只锁定 matched prefix</td></tr>
+<tr><td>进入 EXTEND</td><td>设置 <code>extend_range</code></td><td>flatten inputs 与 prefix lengths</td><td>request row + 新 KV slots</td></tr>
+<tr><td>首 token 产生</td><td><code>output_ids</code> 追加</td><td>本轮 result 正在处理</td><td>row/KV 继续保留</td></tr>
+<tr><td>进入 DECODE</td><td>跨轮继续存活</td><td>每轮重新准备 metadata</td><td>每轮追加 slot/page</td></tr>
+<tr><td>结束</td><td>写入 finish reason</td><td>从 batch 过滤</td><td>KV 转 tree 或释放，row 释放</td></tr>
+</tbody>
+</table>
+
+<p>实际走读时，为每个 rid 同时记录 <code>queue/container</code>、<code>forward_mode</code>、<code>req_pool_idx</code>、<code>kv_committed_len</code> 和 <code>last_node</code>。只记录 queue 会看不到 physical ownership，只记录 batch 又会看不到跨轮 request 语义。Result processing 正是在这两本账之间完成提交。<span class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/managers/scheduler.py#L3449-L3568">scheduler.py:3449-3568</a>。</span></p>
+
+<h2>Retracted 不是新 request</h2>
+<p>decode 内存不足时，部分 <code>Req</code> 会释放当前 request row 和 KV，设置 retraction 相关状态，再由 Scheduler 以 <code>is_retracted=True</code> 放回 queue。它保留生成历史与用户语义，但后续必须重新建立 prefix/KV ownership。因而排障时要同时问两件事：request 的逻辑输出是否保留，以及 physical KV 是否仍存在。</p>
+
+<h2>最小自检</h2>
+<div class="quiz" data-answer="3">
+<h3>request A 的 EXTEND 在本轮刚完成。默认主循环何时把 A 变成 running decode 的候选？</h3>
+<label><input type="radio" name="q2" value="1">进入模型以前</label>
+<label><input type="radio" name="q2" value="2">结果处理以前</label>
+<label><input type="radio" name="q2" value="3">下一轮选批时</label>
+<label><input type="radio" name="q2" value="4">请求结束以后</label>
+<div class="feedback correct" aria-live="polite">正确。EXTEND batch 先成为 <code>last_batch</code>，下一轮 <code>get_next_batch_to_run</code> 过滤并合入 <code>running_batch</code>。</div>
+<div class="feedback incorrect" aria-live="polite">不对。跨轮连接点是 <code>last_batch</code>。它在下一轮选批开头被过滤并合入 <code>running_batch</code>。</div>
+</div>
+</body>
+</html>

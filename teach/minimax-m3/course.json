@@ -1,0 +1,27 @@
+{
+  "title": "MiniMax M3 模型架构与计算流程",
+  "lessons": [
+    {
+      "title": "MiniMax M3: 整体架构与计算流程",
+      "path": "lessons/0001-architecture-overview.html"
+    },
+    {
+      "title": "MSA 算法深度解析、MoE Routing 机制与 DeepSeek-V3 架构对比",
+      "path": "lessons/0002-msa-moe-architecture-comparison.html"
+    },
+    {
+      "title": "KV-Outer Kernel 优化、NSA/DSA/MSA 三方对比、SGLang DSA Indexer 实现",
+      "path": "lessons/0003-kv-outer-nsa-dsa-msa-sglang-impl.html"
+    }
+  ],
+  "references": [
+    {
+      "title": "MiniMax M3 Architecture Cheatsheet",
+      "path": "reference/architecture-cheatsheet.html"
+    },
+    {
+      "title": "Sparse Attention Comparison: MSA vs MLA vs DSA",
+      "path": "reference/msa-mla-dsa-comparison.html"
+    }
+  ]
+}

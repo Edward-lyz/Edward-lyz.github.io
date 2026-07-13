@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>参考卡：GLM-5.2 架构维度速查表</title>
+<style>
+  body { font-family: 'Palatino Linotype', 'Book Antiqua', Palatino, serif; max-width: 960px; margin: 2em auto; padding: 0 1.5em; color: #222; line-height: 1.7; }
+  h1 { font-size: 1.6em; border-bottom: 3px solid #222; padding-bottom: 0.3em; }
+  h2 { font-size: 1.25em; margin-top: 2em; color: #333; border-left: 4px solid #1e88e5; padding-left: 0.6em; }
+  h3 { font-size: 1.05em; margin-top: 1.4em; color: #555; }
+  table { border-collapse: collapse; margin: 0.8em 0; width: 100%; }
+  th, td { border: 1px solid #bbb; padding: 0.35em 0.7em; text-align: left; font-size: 0.88em; }
+  th { background: #eef2f7; }
+  td.num { font-family: 'SF Mono', Menlo, monospace; text-align: right; }
+  code { background: #f0f0f0; padding: 0.12em 0.35em; border-radius: 3px; font-size: 0.85em; font-family: 'SF Mono', Menlo, monospace; }
+  .note { background: #fffde7; border-left: 4px solid #f9a825; padding: 0.6em 1em; margin: 1em 0; font-size: 0.9em; }
+  .src { background: #e8f5e9; border-left: 4px solid #43a047; padding: 0.6em 1em; margin: 1em 0; font-size: 0.85em; }
+  .nav { font-size: 0.85em; color: #888; margin-bottom: 1.5em; }
+  .footer { margin-top: 3em; padding-top: 1em; border-top: 1px solid #ddd; font-size: 0.85em; color: #666; }
+  @media print { body { max-width: 100%; font-size: 11px; } h2 { page-break-after: avoid; } table { page-break-inside: avoid; } .nav, .footer { display: none; } }
+</style>
+</head>
+<body>
+<div class="nav"><a href="../lessons/0001-glm52-architecture-indexshare.html">课 01</a> · <a href="../lessons/0002-sglang-day0-enablement.html">课 02</a> · <a href="./sglang-day0-checklist.html">Day-0 Checklist</a></div>
+
+<h1>GLM-5.2-FP8 架构维度速查表</h1>
+<p class="src"><strong>事实来源（ground truth）</strong>：维度全部取自真实 FP8 权重校验文件
+<code>PRIVATE/archive/aiak_ds_tool_glm_5_2_fp8/model_yaml_validation.json</code>（83 项校验），
+而非论文或记忆。GEMM 的 <code>n/k</code> 即权重张量的输出/输入维度。</p>
+
+<h2>1. 基础规模</h2>
+<table>
+<tr><th>参数</th><th>值</th><th>说明</th></tr>
+<tr><td>num_hidden_layers</td><td class="num">78</td><td>+1 个 MTP draft 层（layer 78）</td></tr>
+<tr><td>hidden_size</td><td class="num">6144</td><td>残差流维度</td></tr>
+<tr><td>vocab_size</td><td class="num">154,880</td><td>tie_word_embeddings = false</td></tr>
+<tr><td>max_position_embeddings</td><td class="num">1,048,576</td><td><strong>1M 原生 context</strong></td></tr>
+<tr><td>rope_theta</td><td class="num">8,000,000</td><td>支撑 1M 的关键；interleave=true</td></tr>
+<tr><td>总参数 / 激活</td><td class="num">~753B / ~22B</td><td>8/256 专家激活 ≈ 3.1%</td></tr>
+</table>
+
+<h2>2. MLA 注意力（主路径）</h2>
+<table>
+<tr><th>参数</th><th>值</th><th>推导</th></tr>
+<tr><td>num_attention_heads</td><td class="num">64</td><td>query heads</td></tr>
+<tr><td>q_lora_rank</td><td class="num">2048</td><td>Q 压缩维</td></tr>
+<tr><td>kv_lora_rank</td><td class="num">512</td><td>KV latent 压缩维（cache 只存这个 + rope key 64）</td></tr>
+<tr><td>qk_nope_head_dim</td><td class="num">192</td><td>不加 RoPE 部分</td></tr>
+<tr><td>qk_rope_head_dim</td><td class="num">64</td><td>加 RoPE 部分；qk_head_dim = 256</td></tr>
+<tr><td>v_head_dim</td><td class="num">256</td><td>value head dim</td></tr>
+</table>
+<table>
+<tr><th>GEMM</th><th>n (out)</th><th>k (in)</th><th>含义</th></tr>
+<tr><td>wqa_wkv</td><td class="num">2624</td><td class="num">6144</td><td>q_a + kv_a_mqa 融合：2048+512+64</td></tr>
+<tr><td>q_b</td><td class="num">16384</td><td class="num">2048</td><td>2048 → 64×256</td></tr>
+<tr><td>kv_b_proj</td><td class="num">28672</td><td class="num">512</td><td>512 → 64×(192+256)</td></tr>
+<tr><td>o_proj</td><td class="num">6144</td><td class="num">16384</td><td>64×256 → 6144</td></tr>
+</table>
+<div class="note"><strong>Sparse-MLA 算子</strong>：<code>SparseMLAOp</code>，head_num=64，<strong>head_dim=576</strong>（=512 latent + 64 rope，即 absorbed 形式），topk=2048。
+<strong>禁用</strong> DeepSeek-V4 专属的 <code>FlashMLAV4Op</code> / 压缩 cache 路径——GLM-5.2 是 DSA，不是 V4 压缩。</div>
+
+<h2>3. DSA Indexer（IndexShare 的核心模块）</h2>
+<table>
+<tr><th>参数</th><th>值</th><th>含义</th></tr>
+<tr><td>index_n_heads</td><td class="num">32</td><td>indexer 的 head 数（轻量）</td></tr>
+<tr><td>index_head_dim</td><td class="num">128</td><td>indexer head dim</td></tr>
+<tr><td>index_topk</td><td class="num">2048</td><td>每 query 选 top-2048 个 key</td></tr>
+<tr><td>indexer_q_b</td><td class="num">n=4096, k=2048</td><td>q_lora 2048 → 32×128</td></tr>
+<tr><td>indexer_wk</td><td class="num">n=128, k=6144</td><td>MQA 单头 key：6144 → 128</td></tr>
+<tr><td>indexer_weights_proj</td><td class="num">n=32, k=6144</td><td>per-head 权重 → 32</td></tr>
+<tr><td>indexer_k_norm</td><td class="num">hidden=128</td><td>K 上的 RMSNorm</td></tr>
+</table>
+<div class="note"><strong>IndexShare 关键参数</strong>（HF config，不在上表权重里）：<code>index_topk_freq=4</code>（每 4 层重算一次 index）、
+<code>index_share_for_mtp_iteration=true</code>（MTP 迭代复用 index）。这是 GLM-5.2 相对 DeepSeek-V3.2 DSA 的**算法增量**。</div>
+
+<h2>4. MoE（layer 3–77）</h2>
+<table>
+<tr><th>参数</th><th>值</th><th>含义</th></tr>
+<tr><td>n_routed_experts</td><td class="num">256</td><td>路由专家数</td></tr>
+<tr><td>num_experts_per_tok</td><td class="num">8</td><td>每 token 激活</td></tr>
+<tr><td>n_shared_experts</td><td class="num">1</td><td>共享专家（always-on）</td></tr>
+<tr><td>moe_intermediate_size</td><td class="num">2048</td><td>每专家 FFN 中间维</td></tr>
+<tr><td>first_k_dense_replace</td><td class="num">3</td><td>layer 0–2 用 dense FFN（intermediate=12288）</td></tr>
+<tr><td>scoring_func</td><td>sigmoid</td><td>独立打分，非 softmax 零和</td></tr>
+<tr><td>topk_method</td><td>noaux_tc</td><td>无辅助损失 + bias 校正负载均衡</td></tr>
+<tr><td>routed_scaling_factor</td><td class="num">2.5</td><td>路由输出缩放</td></tr>
+</table>
+<table>
+<tr><th>GEMM</th><th>n</th><th>k</th><th>groups</th></tr>
+<tr><td>moe.gate</td><td class="num">256</td><td class="num">6144</td><td>—</td></tr>
+<tr><td>group_gemm_up_gate</td><td class="num">4096</td><td class="num">6144</td><td>256</td></tr>
+<tr><td>group_gemm_down</td><td class="num">6144</td><td class="num">2048</td><td>256</td></tr>
+<tr><td>share_up_gate / share_down</td><td class="num">4096 / 6144</td><td class="num">6144 / 2048</td><td>1</td></tr>
+</table>
+
+<h2>5. MTP / FP8</h2>
+<table>
+<tr><th>参数</th><th>值</th><th>含义</th></tr>
+<tr><td>num_nextn_predict_layers</td><td class="num">1</td><td>单 MTP draft 层（layer 78）</td></tr>
+<tr><td>mtp_proj (eh_proj)</td><td class="num">n=6144, k=12288</td><td>[emb;hidden] 2×6144 → 6144</td></tr>
+<tr><td>FP8 格式</td><td>e4m3</td><td>weight_block_size [128,128]，activation dynamic</td></tr>
+<tr><td>保持 BF16</td><td colspan="2">所有 layernorm、gate bias、indexer、embed_tokens、lm_head、model.norm</td></tr>
+</table>
+
+<h2>6. IndexShare 层拓扑（78 层）</h2>
+<p>indexer 只在这些层重算（其余层复用上一个 indexer 的 index）：</p>
+<p><code>full indexer layers = [0,1,2, 6,10,14,18,22,26,30,34,38,42,46,50,54,58,62,66,70,74, 78]</code></p>
+<table>
+<tr><th>层段</th><th>角色</th></tr>
+<tr><td>0,1,2</td><td>dense MLP + full indexer（每层都算）</td></tr>
+<tr><td>3,4,5</td><td>sparse MoE，复用 layer 2 的 index</td></tr>
+<tr><td>6 / 10 / 14 / …</td><td>sparse MoE + <code>sparse_indexer</code>（重算，每 4 层一次）</td></tr>
+<tr><td>7,8,9 / 11,12,13 / …</td><td>sparse MoE，复用上一个 sparse_indexer 的 index</td></tr>
+<tr><td>78</td><td>MTP draft 层（与 base 共享 index）</td></tr>
+</table>
+<div class="note"><strong>记忆锚点</strong>：dense 前缀 3 层全算 index → 之后每 4 层一个"全算"层（6,10,14…），中间 3 层白嫖。
+2048-token index 在相邻层变化缓慢，复用几乎不掉点，1M context 下省 <strong>2.9×</strong> attention FLOPs。</div>
+
+<div class="footer">参考卡 · 维度源自真实 FP8 权重校验 · 配合 <a href="../lessons/0001-glm52-architecture-indexshare.html">课 01</a> 使用</div>
+</body>
+</html>

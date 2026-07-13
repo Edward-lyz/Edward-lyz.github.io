@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 01: Subagent 编排设计哲学 — 从两个开源项目看 Agent 委托的核心模式</title>
+<style>
+:root { --text: #1a1a1a; --bg: #fefefe; --accent: #2563eb; --muted: #6b7280; --border: #e5e7eb; --code-bg: #f3f4f6; --highlight: #fef3c7; --success: #dcfce7; --danger: #fef2f2; }
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'Crimson Pro', 'Source Han Serif CN', Georgia, serif; color: var(--text); background: var(--bg); max-width: 780px; margin: 0 auto; padding: 2rem 1.5rem; line-height: 1.75; font-size: 17px; }
+h1 { font-size: 1.8rem; margin-bottom: 0.3rem; letter-spacing: -0.02em; }
+h2 { font-size: 1.35rem; margin-top: 2.8rem; margin-bottom: 0.8rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+h3 { font-size: 1.1rem; margin-top: 1.8rem; margin-bottom: 0.5rem; }
+p { margin-bottom: 1rem; }
+.subtitle { color: var(--muted); font-size: 0.95rem; margin-bottom: 2rem; }
+.formula-box { background: var(--code-bg); border-left: 3px solid var(--accent); padding: 1rem 1.2rem; margin: 1.2rem 0; font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.85rem; line-height: 1.8; overflow-x: auto; white-space: pre-wrap; }
+.key-insight { background: var(--highlight); border-radius: 4px; padding: 0.8rem 1rem; margin: 1rem 0; }
+.key-insight::before { content: "💡 "; }
+.danger-box { background: var(--danger); border-left: 3px solid #ef4444; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 4px; }
+.danger-box::before { content: "⚠️ "; }
+.success-box { background: var(--success); border-left: 3px solid #22c55e; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 4px; }
+.success-box::before { content: "✅ "; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 0.9rem; }
+th, td { border: 1px solid var(--border); padding: 0.5rem 0.7rem; text-align: left; }
+th { background: var(--code-bg); font-weight: 600; }
+code { font-family: 'JetBrains Mono', monospace; font-size: 0.83em; background: var(--code-bg); padding: 0.15em 0.4em; border-radius: 3px; }
+pre { background: var(--code-bg); padding: 1rem 1.2rem; margin: 1rem 0; border-radius: 6px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.82rem; line-height: 1.6; }
+.compare { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1.5rem 0; }
+.compare-card { border: 1px solid var(--border); border-radius: 8px; padding: 1rem; }
+.compare-card h4 { color: var(--accent); margin-bottom: 0.5rem; }
+.toc { background: var(--code-bg); padding: 1rem 1.5rem; border-radius: 6px; margin: 1.5rem 0; }
+.toc ul { list-style: none; padding-left: 0; }
+.toc li { margin: 0.3rem 0; }
+.toc a { color: var(--accent); text-decoration: none; }
+.role-card { border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.2rem; margin: 0.8rem 0; }
+.role-card .role-name { font-weight: 700; color: var(--accent); }
+.role-card .role-tools { font-family: monospace; font-size: 0.8rem; color: var(--muted); }
+.flow-diagram { background: var(--code-bg); padding: 1.2rem; border-radius: 8px; margin: 1.2rem 0; font-family: 'JetBrains Mono', monospace; font-size: 0.82rem; line-height: 1.8; white-space: pre; overflow-x: auto; }
+.nav { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--border); font-size: 0.9rem; color: var(--muted); }
+</style>
+</head>
+<body>
+
+<h1>Subagent 编排设计哲学</h1>
+<p class="subtitle">从两个开源项目看 Agent 委托的核心模式 · 2026-06-17</p>
+
+<nav class="toc">
+<strong>目录</strong>
+<ul>
+<li><a href="#core-question">核心问题：为什么需要 Subagent</a></li>
+<li><a href="#two-schools">两大流派对比</a></li>
+<li><a href="#role-model">五角色模型</a></li>
+<li><a href="#context-strategy">Context 传递策略</a></li>
+<li><a href="#orchestration">编排模式</a></li>
+<li><a href="#boundaries">安全边界与隔离</a></li>
+<li><a href="#design-decisions">设计决策清单</a></li>
+</ul>
+</nav>
+
+<h2 id="core-question">核心问题：为什么需要 Subagent</h2>
+
+<p>单个 LLM session 有三个天然瓶颈：</p>
+
+<table>
+<tr><th>瓶颈</th><th>表现</th><th>Subagent 怎么解</th></tr>
+<tr><td>Context 衰减</td><td>对话越长，早期信息被 compaction 吞掉，判断力下降</td><td>Fresh context child 从零开始审视，不受历史噪声干扰</td></tr>
+<tr><td>角色冲突</td><td>同一个 session 又要写代码又要 review，自我审查形同虚设</td><td>Role isolation：writer 和 reviewer 是不同 session，互相对抗</td></tr>
+<tr><td>串行瓶颈</td><td>复杂任务只能一步步来，探索效率低</td><td>Parallel fan-out：多个 scout/reviewer 并发跑</td></tr>
+</table>
+
+<div class="key-insight">Subagent 的核心价值不是并发加速，而是 <strong>context isolation + role specialization</strong>。并发只是锦上添花。</div>
+
+<h2 id="two-schools">两大流派对比</h2>
+
+<div class="compare">
+<div class="compare-card">
+<h4>nicobailon/pi-subagents ⭐2222</h4>
+<p><strong>设计哲学：</strong>Markdown-first 声明式角色</p>
+<ul>
+<li>Agent 定义 = markdown frontmatter + system prompt</li>
+<li>内置 8 个角色（scout/researcher/planner/worker/reviewer/oracle/context-builder/delegate）</li>
+<li>Prompt template 编排（/parallel-review, /review-loop）</li>
+<li>Intercom 协议实现 child↔parent 通信</li>
+<li>重点：<strong>角色语义清晰，约束严格</strong></li>
+</ul>
+</div>
+<div class="compare-card">
+<h4>tintinweb/pi-subagents ⭐482</h4>
+<p><strong>设计哲学：</strong>Extension-first UI 驱动</p>
+<ul>
+<li>三工具模型：Agent / steer_subagent / get_subagent_result</li>
+<li>内置 3 个类型（general-purpose/Explore/Plan）</li>
+<li>运行时 widget（token 用量、compaction 次数、turn 进度）</li>
+<li>Mid-run steering、worktree isolation、scheduled agents</li>
+<li>重点：<strong>可观测性 + 运行时控制</strong></li>
+</ul>
+</div>
+</div>
+
+<table>
+<tr><th>维度</th><th>nicobailon</th><th>tintinweb</th></tr>
+<tr><td>Agent 定义位置</td><td><code>agents/*.md</code> 独立目录</td><td><code>.pi/agents/*.md</code></td></tr>
+<tr><td>调用方式</td><td><code>subagent({ role, task, ... })</code> 单工具</td><td><code>Agent/steer/get_result</code> 三工具</td></tr>
+<tr><td>Context 默认</td><td>角色自定（worker=fork, reviewer=fresh）</td><td>全部默认 fresh，显式 inherit</td></tr>
+<tr><td>Parent↔Child 通信</td><td>intercom + contact_supervisor 双通道</td><td>steer_subagent 单向注入</td></tr>
+<tr><td>并发控制</td><td>parallel() 由 parent prompt 编排</td><td>maxConcurrent queue（默认 4）</td></tr>
+<tr><td>Turn 限制</td><td>无内置，靠 prompt 约束</td><td>max_turns + grace period + graceful shutdown</td></tr>
+<tr><td>文件隔离</td><td>无</td><td>worktree isolation（git worktree）</td></tr>
+<tr><td>可观测性</td><td>低（completion notification）</td><td>高（live widget, token%, compaction count）</td></tr>
+</table>
+
+<div class="key-insight">选择建议：需要严格角色语义和复杂编排 → nicobailon。需要运行时控制和 UI 可观测 → tintinweb。两者可共存。</div>
+
+<h2 id="role-model">五角色模型</h2>
+
+<p>nicobailon 的 8 个内置 agent 可以归纳为 5 个核心职责。这个模型是 subagent 拓扑设计的基础：</p>
+
+<div class="role-card">
+<span class="role-name">Scout</span> — 快速侦察，产出 context handoff<br>
+<span class="role-tools">tools: read, grep, find, ls, bash(read-only)</span>
+<p>目标：用最小 token 开销搞清楚代码结构。产出 <code>context.md</code>（关键文件 + 行号 + 架构）。thinking: low，追求速度不追求深度。</p>
+</div>
+
+<div class="role-card">
+<span class="role-name">Planner</span> — 产出可执行计划<br>
+<span class="role-tools">tools: read, grep, find, ls, write（只写 plan.md）</span>
+<p>目标：把 context + requirements 转化为编号步骤、文件列表、验证方式。不写代码，不做决策。thinking: high。</p>
+</div>
+
+<div class="role-card">
+<span class="role-name">Worker</span> — 唯一的写入线程<br>
+<span class="role-tools">tools: read, grep, find, ls, bash, edit, write</span>
+<p>目标：执行 plan 或 approved direction。遇到未批准的决策必须 escalate，不能自作主张。defaultContext: fork（继承上下文知道该做什么）。</p>
+</div>
+
+<div class="role-card">
+<span class="role-name">Reviewer</span> — 对抗性审查<br>
+<span class="role-tools">tools: read, grep, find, ls, bash(read-only), edit(可选小修)</span>
+<p>目标：从 fresh context 审视 diff，与 worker 形成对抗。关键约束：<strong>必须 fresh context</strong>，不能继承 worker 的认知偏差。</p>
+</div>
+
+<div class="role-card">
+<span class="role-name">Oracle</span> — 决策一致性守护<br>
+<span class="role-tools">tools: read, grep, find, ls, bash(read-only)</span>
+<p>目标：防止 context rot 导致的决策漂移。从 forked context 重建 baseline contract，检测当前轨迹是否偏离已批准方向。不写代码，不做新决策。</p>
+</div>
+
+<div class="key-insight">职责边界的核心原则：<strong>能写的不审，能审的不写</strong>。Worker 和 Reviewer 必须是不同 session，这是 subagent 存在的根本理由。</div>
+
+<h3>附加角色</h3>
+<table>
+<tr><th>角色</th><th>本质</th><th>何时使用</th></tr>
+<tr><td>Researcher</td><td>Scout 的 web 版</td><td>需要外部信息（API docs、benchmarks、最新变更）</td></tr>
+<tr><td>Context-builder</td><td>Scout + Researcher 的加强版</td><td>大型任务需要写 meta-prompt 做 handoff</td></tr>
+<tr><td>Delegate</td><td>Parent twin</td><td>不需要角色特化，只需要 context isolation</td></tr>
+</table>
+
+<h2 id="context-strategy">Context 传递策略</h2>
+
+<p>这是 subagent 设计中最关键的决策点。选错了，subagent 的价值归零。</p>
+
+<table>
+<tr><th>策略</th><th>含义</th><th>适用场景</th><th>风险</th></tr>
+<tr><td><strong>Fresh</strong></td><td>Child 从空白开始，只有 system prompt + task</td><td>Review、audit、second opinion</td><td>缺失关键上下文，可能重复已否决的方案</td></tr>
+<tr><td><strong>Fork</strong></td><td>Child 继承 parent 完整对话历史</td><td>Worker 执行已讨论的方案、Oracle 检测漂移</td><td>继承 parent 的认知偏差和 context rot</td></tr>
+<tr><td><strong>Selective</strong></td><td>传递 context.md / plan.md 等结构化 handoff</td><td>跨阶段 pipeline（scout→planner→worker）</td><td>handoff 可能遗漏隐含约束</td></tr>
+</table>
+
+<div class="danger-box">
+<strong>Anti-pattern：Fork context 给 Reviewer。</strong>Reviewer 继承了 worker 的推理过程后，会不自觉地为 worker 的实现辩护而非挑战它。这就是为什么 nicobailon 的 /parallel-review 模板明确写死：Use fresh context, not forked context。
+</div>
+
+<div class="success-box">
+<strong>Golden rule：</strong>需要对抗 → fresh。需要延续 → fork。需要 handoff → selective（写结构化文件）。
+</div>
+
+<h3>nicobailon 的 context 过滤机制</h3>
+<p>Fork 不是简单的全量复制。Child 会过滤掉：</p>
+<ul>
+<li>Parent 的 subagent tool-call/tool-result（避免 child 误以为自己是 orchestrator）</li>
+<li>旧的 orchestration 指令消息</li>
+<li>Slash command / status 消息</li>
+</ul>
+<p>保留：普通 prose、非 subagent 的 tool 调用和结果。这比全量 fork 更安全。</p>
+
+<h2 id="orchestration">编排模式</h2>
+
+<h3>Pattern 1: Parallel Fan-out（最常用）</h3>
+<div class="flow-diagram">
+Parent
+├── Reviewer A (correctness)    ─┐
+├── Reviewer B (tests)          ─┼── 并发，fresh context
+└── Reviewer C (simplicity)     ─┘
+         │
+    Parent synthesize → 决定哪些 fix 值得做
+         │
+    Worker (apply fixes) → fork context
+</div>
+<p>关键设计：</p>
+<ul>
+<li>每个 reviewer 给不同 angle，避免重复劳动</li>
+<li>角度从 diff 内容动态生成，不是固定的三板斧</li>
+<li>Parent 做 synthesis，不盲从任何一个 reviewer</li>
+<li>只做 fixes worth doing now，不做 optional improvements</li>
+</ul>
+
+<h3>Pattern 2: Review Loop（迭代收敛）</h3>
+<div class="flow-diagram">
+Worker (implement)
+    │
+    ↓
+┌─ Reviewers (parallel, fresh) ─┐
+│   有 blocker?                   │
+│   ├─ Yes → Worker (fix) ──────→│  (下一轮)
+│   └─ No  → 结束                │
+└─────────────────────────────────┘
+    max 3 rounds (防止无限循环)
+</div>
+<p>停止条件（任一满足即停）：</p>
+<ul>
+<li>Reviewer 无 blocker 且无 fixes worth doing</li>
+<li>剩余反馈全是 optional/speculative/deferred</li>
+<li>Reviewer 发现未批准的架构决策 → 暂停问用户</li>
+<li>达到 max round cap</li>
+</ul>
+
+<h3>Pattern 3: Pipeline Chain（线性 handoff）</h3>
+<div class="flow-diagram">
+Scout (recon)
+  → context.md
+    → Planner (plan)
+      → plan.md
+        → Worker (implement)
+          → Reviewer (verify)
+</div>
+<p>每个阶段的产出是下一个阶段的输入。Selective context，文件即接口。</p>
+
+<h3>Pattern 4: Clarify → Plan → Execute（完整工作流）</h3>
+<div class="flow-diagram">
+Scout + Researcher (parallel recon)
+  → context.md + research.md
+    → Parent 向用户提问 (clarify)
+      → Planner (plan)
+        → Oracle (validate plan consistency)
+          → Worker (implement)
+            → Reviewers (parallel verify)
+              → Worker (fix) → done
+</div>
+
+<h2 id="boundaries">安全边界与隔离</h2>
+
+<h3>Child 不能做什么</h3>
+<p>nicobailon 的关键安全设计：</p>
+<ul>
+<li>Child 默认<strong>没有</strong> subagent 工具 → 不能无限 spawn</li>
+<li>Child 收到 boundary instruction：你不是 orchestrator，不能提议或运行 subagent</li>
+<li>只有 agent 定义中 <code>tools</code> 显式包含 <code>subagent</code> 的 child 才能 fan-out（受 maxSubagentDepth 限制）</li>
+<li>Fork context 过滤掉 parent 的 subagent 历史 → child 不知道 parent 的编排细节</li>
+</ul>
+
+<h3>tintinweb 的隔离手段</h3>
+<table>
+<tr><th>机制</th><th>作用</th></tr>
+<tr><td><code>isolated: true</code></td><td>Hermetic 模式：禁用 extensions + skills + context，只有 built-in tools</td></tr>
+<tr><td><code>isolation: worktree</code></td><td>Git worktree 隔离：agent 在独立副本中编辑，完成后 auto-commit 到 branch</td></tr>
+<tr><td><code>max_turns</code> + grace</td><td>防止 agent 失控：到 limit 后注入 wrap-up 指令，5 turn 内必须结束</td></tr>
+<tr><td><code>disallowed_tools</code></td><td>显式禁止特定 tool</td></tr>
+</table>
+
+<div class="danger-box">
+<strong>Depth bomb 防护：</strong>如果 child 能无限 spawn child，token 成本指数爆炸。nicobailon 用 maxSubagentDepth 硬限制，tintinweb 用默认不注册 subagent 工具。两种方式等价有效。
+</div>
+
+<h2 id="design-decisions">设计决策清单</h2>
+
+<p>当你为自己的项目设计 subagent 拓扑时，按顺序回答这些问题：</p>
+
+<table>
+<tr><th>#</th><th>问题</th><th>决策空间</th></tr>
+<tr><td>1</td><td>这个任务需要对抗性审查吗？</td><td>需要 → 至少一个 fresh reviewer</td></tr>
+<tr><td>2</td><td>写入操作是否需要 guard？</td><td>需要 → worker 必须有 escalation path</td></tr>
+<tr><td>3</td><td>任务能拆成独立子问题吗？</td><td>能 → parallel fan-out</td></tr>
+<tr><td>4</td><td>需要外部信息吗？</td><td>需要 → researcher 角色</td></tr>
+<tr><td>5</td><td>任务涉及架构决策吗？</td><td>涉及 → oracle 做 drift check</td></tr>
+<tr><td>6</td><td>Parent context 是否已退化？</td><td>退化 → 用 scout 重建，不要依赖 parent 记忆</td></tr>
+<tr><td>7</td><td>需要多轮收敛吗？</td><td>需要 → review loop + max cap</td></tr>
+<tr><td>8</td><td>结果可逆吗？</td><td>不可逆 → worktree isolation 或 dry-run</td></tr>
+</table>
+
+<h3>最小有效拓扑</h3>
+<pre>
+日常小修改:    Worker (fork) → Reviewer (fresh) → done
+中等 feature:  Scout → Planner → Worker → 3x Reviewer (parallel) → Worker fix
+大型重构:      Scout + Researcher → Clarify → Planner → Oracle → Worker → Review Loop (max 3)
+纯调研:        Researcher (parallel, 多角度) → Parent synthesize
+</pre>
+
+<div class="key-insight">
+<strong>奥卡姆剃刀应用于 subagent：</strong>能用一个 agent 解决的不要拆两个。每多一个 subagent 就多 N 万 token 的固定开销（system prompt + context loading）。只在瓶颈出现时才加 agent。
+</div>
+
+<h2>总结：三条第一性原理</h2>
+
+<ol>
+<li><strong>Context is king</strong> — subagent 的全部价值来自 context 管理。Fresh 用于对抗，Fork 用于延续，Selective 用于 handoff。选错 context 策略，subagent 就是浪费钱。</li>
+<li><strong>能写的不审，能审的不写</strong> — 角色隔离不是形式主义。同一个 session 无法有效自我审查，这是 LLM 的认知局限，不是工程选择。</li>
+<li><strong>Parent is the brain</strong> — 编排逻辑在 parent，不在 child。Child 只做分配给它的事。Synthesis 和决策权永远在 parent（最终在用户）。</li>
+</ol>
+
+<div class="nav">
+<p>PRIVATE/teach/subagent-design-philosophy · Lesson 01</p>
+</div>
+
+</body>
+</html>

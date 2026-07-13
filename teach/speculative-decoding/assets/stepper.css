@@ -1,0 +1,95 @@
+/* Step-through Animation Widget */
+.stepper {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1.5rem;
+  margin: 1.5rem 0;
+  background: #fafafa;
+}
+.stepper h4 {
+  margin-bottom: 1rem;
+  font-size: 1rem;
+}
+.stepper .step-display {
+  min-height: 280px;
+  position: relative;
+}
+
+/* Before JS initializes, show all steps so mermaid can render them */
+.stepper .step-content {
+  transition: opacity 0.3s ease;
+}
+
+/* After JS adds .ready class, it controls visibility via inline styles */
+
+.stepper .controls {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  margin-top: 1rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--border);
+}
+.stepper .controls button {
+  padding: 0.4rem 1rem;
+  border: 1px solid var(--accent);
+  background: white;
+  color: var(--accent);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: all 0.15s;
+}
+.stepper .controls button:hover:not(:disabled) {
+  background: var(--accent);
+  color: white;
+}
+.stepper .controls button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.stepper .progress {
+  font-size: 0.8rem;
+  color: #6b7280;
+  margin-left: auto;
+}
+
+/* Attention grid visualization */
+.attn-grid {
+  display: inline-block;
+  margin: 0.5rem 0;
+}
+.attn-grid table {
+  border-collapse: collapse;
+  font-size: 0.7rem;
+  font-family: monospace;
+}
+.attn-grid td, .attn-grid th {
+  width: 28px;
+  height: 28px;
+  text-align: center;
+  border: 1px solid #e5e7eb;
+  padding: 2px;
+}
+.attn-grid th {
+  background: #f3f4f6;
+  font-weight: 600;
+}
+.attn-grid .attend {
+  background: #3b82f6;
+  color: white;
+}
+.attn-grid .no-attend {
+  background: #f9fafb;
+  color: #d1d5db;
+}
+.attn-grid .highlight {
+  background: #f59e0b;
+  color: white;
+}
+.attn-grid .ctx-zone {
+  background: #dbeafe;
+}
+.attn-grid .draft-zone {
+  background: #fef3c7;
+}

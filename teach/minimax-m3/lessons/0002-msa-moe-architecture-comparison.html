@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Lesson 02: MSA 算法深度解析 — 数学推导、训练机制与 DeepSeek-V3 对比</title>
+<style>
+  body { font-family: 'Palatino Linotype', 'Book Antiqua', Palatino, serif; max-width: 960px; margin: 2em auto; padding: 0 1.5em; color: #333; line-height: 1.8; }
+  h1 { font-size: 1.8em; border-bottom: 2px solid #333; padding-bottom: 0.3em; }
+  h2 { font-size: 1.4em; margin-top: 2.5em; color: #444; border-left: 4px solid #333; padding-left: 0.6em; }
+  h3 { font-size: 1.15em; margin-top: 1.8em; color: #555; }
+  h4 { font-size: 1.0em; margin-top: 1.2em; font-style: italic; }
+  .mermaid { background: #fafafa; border: 1px solid #ddd; border-radius: 4px; padding: 1em; margin: 1.5em 0; overflow-x: auto; }
+  table { border-collapse: collapse; margin: 1em 0; width: 100%; }
+  th, td { border: 1px solid #ccc; padding: 0.5em 0.8em; text-align: left; }
+  th { background: #f5f5f5; }
+  .key-insight { background: #fffde7; border-left: 4px solid #f9a825; padding: 0.8em 1em; margin: 1.2em 0; }
+  .deep-dive { background: #e8f5e9; border-left: 4px solid #43a047; padding: 0.8em 1em; margin: 1.2em 0; }
+  .warning { background: #fce4ec; border-left: 4px solid #e53935; padding: 0.8em 1em; margin: 1.2em 0; }
+  .compare { background: #e3f2fd; border-left: 4px solid #1e88e5; padding: 0.8em 1em; margin: 1.2em 0; }
+  .citation { font-size: 0.85em; color: #666; }
+  code { background: #f0f0f0; padding: 0.15em 0.4em; border-radius: 3px; font-size: 0.9em; }
+  pre { background: #f8f8f8; padding: 1em; border-radius: 4px; overflow-x: auto; font-size: 0.88em; line-height: 1.5; }
+  .param { font-family: monospace; color: #d32f2f; }
+  .math { font-family: 'Times New Roman', serif; font-style: italic; }
+  .footer { margin-top: 3em; padding-top: 1em; border-top: 1px solid #ddd; font-size: 0.9em; color: #666; }
+  .nav { font-size: 0.85em; color: #888; margin-bottom: 2em; }
+  .toc { background: #f9f9f9; border: 1px solid #eee; padding: 1em 1.5em; margin: 1.5em 0; }
+  .toc ul { margin: 0.3em 0; padding-left: 1.5em; }
+  .toc li { margin: 0.2em 0; }
+  .quiz { background: #f3e5f5; border: 1px solid #ce93d8; border-radius: 4px; padding: 1em; margin: 1.5em 0; }
+  .quiz summary { cursor: pointer; font-weight: bold; }
+  .quiz p { margin: 0.5em 0; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+</head>
+<body>
+
+<div class="nav"><a href="0001-architecture-overview.html">← Lesson 01</a> · Lesson 02 · MSA Deep Dive + MoE + Architecture Comparison</div>
+
+<h1>MSA 算法深度解析、MoE Routing 机制与 DeepSeek-V3 架构对比</h1>
+
+<div class="toc">
+<strong>目录</strong>
+<ul>
+<li><a href="#part-a">Part A: MSA 数学推导与近似误差分析</a></li>
+<li><a href="#part-b">Part B: MoE Routing — Sigmoid vs Softmax 与 Load Balancing</a></li>
+<li><a href="#part-c">Part C: MSA vs MLA — 两条截然不同的长 context 之路</a></li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="part-a">Part A: MSA 数学推导与近似误差分析</h2>
+
+<h3>A.1 从 Full Attention 到 Block-Sparse Attention 的形式化</h3>
+
+<p>标准 causal attention 对位置 t、head h：</p>
+
+<pre>
+o_t^(h) = Σ_{i≤t} α_{t,i}^(h) · v_i^(h)
+
+α_{t,i}^(h) = exp(q_t^(h) · k_i^(h) / √d_h) / Σ_{j≤t} exp(q_t^(h) · k_j^(h) / √d_h)
+</pre>
+
+<p>计算量：<code>Θ(2·H_q·N²·d_h)</code> FLOPs，N=1M 时不可接受。</p>
+
+<p><strong>Block-Sparse 的核心思想：</strong>将 KV sequence 分割为 B = ⌈N/B_k⌉ 个 block，每个 block 包含 B_k 个连续 token。对每个 query 只选 k 个 block 做 attention：</p>
+
+<pre>
+Block partition:  𝔹_b = {(b-1)·B_k + 1, ..., min(b·B_k, N)},  b = 1,...,B
+
+Selected blocks:  I_i^(r) ⊆ {1,...,B},  |I_i^(r)| = k
+
+Sparse output:    O_i^(h) = softmax(Q_i^(h) · K[I_i^(r)]^T / √d_h) · V[I_i^(r)]
+</pre>
+
+<p>其中 r 是 GQA group index（h ∈ H_r），同一 group 的所有 query heads 共享同一组 selected blocks。</p>
+
+<div class="key-insight">
+<strong>Block-level 而非 token-level 选择的原因：</strong>
+<ol>
+<li><strong>GPU 计算友好：</strong>Token-level 的 scatter/gather 无法充分利用 tensor core 的矩阵乘；block-level 允许连续内存访问和规则的 MMA tile</li>
+<li><strong>Routing 开销降低 N/B_k 倍：</strong>只需对 B=N/128 ≈ 8192 个 block 打分，而非 N=1M 个 token</li>
+<li><strong>实验证明质量无损：</strong>Paper Table 4 显示 block_size 从 32→64→128 对 PPL 几乎无影响</li>
+</ol>
+</div>
+
+<h3>A.2 Index Branch 的完整算法</h3>
+
+<p>Index Branch 引入两组独立的投影矩阵：</p>
+
+<pre>
+Q_idx = X · W_q^idx  ∈ ℝ^{N × H_kv × d_idx}    // 4 index heads, d_idx=128
+K_idx = X · W_k^idx  ∈ ℝ^{N × 1 × d_idx}       // 1 shared index key head
+</pre>
+
+<h4>Step 1: Token-level scoring</h4>
+
+<pre>
+S_idx^(r)_{i,j} = (Q_idx^(r)_i · K_idx_j^T) / √d_idx,    j ≤ i  (causal)
+</pre>
+
+<h4>Step 2: Block-level aggregation (Max Pooling)</h4>
+
+<pre>
+M_idx^(r)_{i,b} = max_{j ∈ 𝔹_b, j≤i}  S_idx^(r)_{i,j}
+</pre>
+
+<div class="deep-dive">
+<strong>为什么用 max 而不是 mean/sum？</strong>
+<p>Max pooling 对应一种 upper bound 近似：如果 block 内存在至少一个 high-score token，整个 block 就值得被选中。这符合 attention 的 heavy-hitter 特性——少数 token 贡献大部分 attention mass。</p>
+<p>Mean pooling 会被 block 内的低分 token 拉低，导致包含关键信息但被无关 padding 稀释的 block 被遗漏。Paper 在 Appendix C 未显示 score_type 的对比，但从 NSA/DSA 的经验看，max 是稀疏注意力 block scoring 的标准选择。</p>
+</div>
+
+<h4>Step 3: Top-k Selection + Local Block</h4>
+
+<pre>
+I_i^(r) = TopK_{b ∈ {1,...,B}} (M_idx^(r)_{i,·}, k)  ∪  {local_block(i)}
+</pre>
+
+<p>其中 <code>local_block(i) = ⌈i/B_k⌉</code>，即包含当前 position 的 block 总是被选中。</p>
+
+<h4>Step 4: Main Branch Sparse Attention</h4>
+
+<pre>
+O_i^(h) = softmax(Q_i^(h) · K^(r)[I_i^(r)]^T / √d_h) · V^(r)[I_i^(r)]
+
+其中 h ∈ H_r (group r 的所有 16 个 query heads 共享同一组 selected blocks)
+</pre>
+
+<h3>A.3 完整 MSA Layer 的 Pseudocode (训练)</h3>
+
+<div class="mermaid">
+graph TD
+    X["X ∈ ℝ^{N×d_model}"] --> QKV["Q,K,V = X·W_q, X·W_k, X·W_v<br/>(N,64,128), (N,4,128), (N,4,128)"]
+    X --> |"stopgrad"| IDX["Q_idx, K_idx = sg(X)·W_q^idx, sg(X)·W_k^idx<br/>(N,4,128), (N,1,128)"]
+    
+    IDX --> BMP["BlockMaxPool(Q_idx, K_idx, B_k=128)<br/>→ M_idx ∈ ℝ^{N×4×B}"]
+    BMP --> TOPK["TopK(M_idx, k=16)<br/>→ I: selected block indices"]
+    
+    TOPK --> SPARSE["TopKAttn(Q, K, V, I)<br/>→ O ∈ ℝ^{N×64×128}"]
+    SPARSE --> OPROJ["O_proj = O · W_o<br/>→ ℝ^{N×d_model}"]
+
+    TOPK --> KL["KL_loss = DKL(sg(P_main) ‖ P_idx)<br/>on selected tokens"]
+</div>
+
+<h3>A.4 近似误差分析</h3>
+
+<p><strong>问题：</strong>MSA 跳过了未被选中的 block，这引入了怎样的误差？</p>
+
+<h4>理论框架</h4>
+
+<p>设 full attention weight 为 α_{t,i}，sparse attention weight 为 α̃_{t,i}（未选中的 block 权重为 0）：</p>
+
+<pre>
+Sparse error = ‖o_t^full - o_t^sparse‖
+
+            = ‖Σ_{i∈I} α_{t,i}·v_i  +  Σ_{i∉I} α_{t,i}·v_i  -  Σ_{i∈I} α̃_{t,i}·v_i‖
+</pre>
+
+<p>误差来源两部分：</p>
+<ol>
+<li><strong>Missing mass：</strong>被丢弃 block 中 token 的 attention weight 之和 = <code>Σ_{i∉I} α_{t,i}</code></li>
+<li><strong>Renormalization distortion：</strong>选中 token 的 softmax 在 restricted set 上重新归一化</li>
+</ol>
+
+<div class="key-insight">
+<strong>为什么 MSA 的近似误差很小？</strong>
+<p>Attention 的 heavy-hitter 特性：在实际 LLM 中，大部分 attention mass 集中在极少数 token 上。Paper Figure 5 的可视化显示，learned indexer 准确捕获了 attention sink（首 token）、local diagonal、以及少量 long-range stripes。</p>
+<p>定量验证：MSA-PT (from scratch) 在 3T token 训练后，LM loss 与 full attention 几乎重合（Figure 2 inset），证明信息损失可忽略。</p>
+</div>
+
+<h4>Compute Reduction 推导</h4>
+
+<pre>
+F_GQA(N)  = 2·H_q·d_h·N²                    // full causal attention
+
+F_MSA(N)  = H_kv·d_idx·N²                    // Index Branch (lightweight quadratic)
+          + 4·H_q·d_h·N·k·B_k               // Main Branch (linear in N!)
+
+代入 M3 参数:
+  H_q=64, H_kv=4, d_h=128, d_idx=128, k=16, B_k=128, N=1M
+
+F_GQA  = 2·64·128·(10^6)²  = 16.384 × 10^15
+F_MSA  = 4·128·(10^6)²     = 0.512 × 10^15   // Index Branch
+       + 4·64·128·10^6·16·128 = 67.109 × 10^12  // Main Branch
+
+Ratio = F_GQA / F_MSA ≈ 16.384T / (0.512T + 0.067T) ≈ 28.3×
+</pre>
+
+<div class="deep-dive">
+<strong>关键 insight：</strong>Index Branch 仍然是 O(N²)，但系数极小（H_kv·d_idx = 512 vs H_q·d_h·2 = 16384，差 32 倍）。Main Branch 变为 O(N·k·B_k)，是关于 N 的线性复杂度。在 N=1M 时 Index Branch 仍占主导 FLOPs，但绝对值已很小。
+</div>
+
+<h3>A.5 训练 Index Branch 的关键设计</h3>
+
+<h4>问题：Top-k 不可微</h4>
+
+<p>TopK 操作是离散的（选中/未选中），梯度无法回传到 W_q^idx 和 W_k^idx。需要额外的训练信号。</p>
+
+<h4>解法：KL Alignment Loss</h4>
+
+<pre>
+定义 Index 分布 (on selected tokens I_tok):
+  P_idx^(r)_{i,j} = exp(S_idx^(r)_{i,j}) / Σ_{u∈I_tok} exp(S_idx^(r)_{i,u})
+
+定义 Main Branch 教师分布 (group-averaged):
+  P^(r)_{i,j} = (1/G) · Σ_{ℓ∈H_r} [exp(S^(ℓ)_{i,j}) / Σ_{u∈I_tok} exp(S^(ℓ)_{i,u})]
+
+KL loss:
+  L_KL = (1/N·H_kv) · Σ_i Σ_r DKL(stopgrad(P^(r)_i) ‖ P_idx^(r)_i)
+</pre>
+
+<div class="key-insight">
+<strong>三个关键稳定性设计：</strong>
+<ol>
+<li><strong>Gradient Detach (stopgrad on X)：</strong>Index Branch 的输入是 stopgrad(X)，使 KL loss 只更新 W_q^idx 和 W_k^idx，不影响 backbone。否则 KL 梯度会通过 residual stream 干扰 backbone 训练，导致 gradient spike 或 general ability 退化。<span class="citation">[Paper Figure 8, 9]</span></li>
+<li><strong>Indexer Warmup：</strong>训练前 40B tokens 使用 full attention（Main Branch），同时用 KL loss 训练 Index Branch。避免早期随机 selection 导致 Main Branch 学习到垃圾 representation。<span class="citation">[Paper Figure 10, 11]</span></li>
+<li><strong>Forced Local Block：</strong>总是包含当前 query 所在的 block，保证 local context 可用，防止极端的 selection failure。</li>
+</ol>
+</div>
+
+<h4>训练时 vs 推理时的差异</h4>
+
+<table>
+<tr><th>方面</th><th>训练</th><th>推理</th></tr>
+<tr><td>Index Branch</td><td>计算 KL loss 用于学习</td><td>仅做 block scoring + top-k</td></tr>
+<tr><td>Value head</td><td>初始实验有，最终设计去掉</td><td>不需要</td></tr>
+<tr><td>Exp 计算</td><td>KL loss 需要 softmax</td><td>TopK 是 order-preserving，无需 exp</td></tr>
+<tr><td>Selection</td><td>Block MaxPool + TopK</td><td>同</td></tr>
+</table>
+
+<h3>A.6 Index Branch 实现中的 Hadamard Transform</h3>
+
+<p>从 sglang DSA indexer 代码中可以看到，Q_idx 和 K_idx 在 RoPE 之后还要经过 Hadamard transform：</p>
+
+<pre>
+def rotate_activation(x):
+    hidden_size = x.size(-1)
+    return hadamard_transform(x, scale=hidden_size**-0.5)
+</pre>
+
+<div class="deep-dive">
+<strong>Hadamard Transform 的作用：</strong>
+<p>Hadamard transform 是一个正交变换，将特征在各维度上均匀分散。这有两个好处：</p>
+<ol>
+<li><strong>降低量化误差：</strong>FP8 index cache 量化时，均匀分布的特征比集中在少数维度的特征量化损失更小</li>
+<li><strong>改善 max-pooling scoring：</strong>避免个别维度主导点积结果，使 block score 更稳定</li>
+</ol>
+<p>注意这是 DSA（DeepSeek Sparse Attention）的实现细节，MSA paper 本身未提及 Hadamard。SGLang 的 DSA indexer 同时支持 MSA 和 DSA 模型。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="part-b">Part B: MoE Routing — Sigmoid vs Softmax 与 Load Balancing</h2>
+
+<h3>B.1 MoE Routing 的数学表达</h3>
+
+<pre>
+Input:    x ∈ ℝ^{d_model}         // 单 token 的 hidden state
+Gate:     logits = x · W_gate    // W_gate ∈ ℝ^{d_model × E}, E=128 experts
+Score:    s_e = σ(logits_e)      // sigmoid, 每个 expert 独立打分
+Bias:     s_e' = s_e + bias_e    // e_score_correction_bias
+TopK:     selected = TopK(s', 4) // 选 4 个 expert
+Weights:  w_e = s_e' / Σ_{e∈sel} s_e'  // renormalize
+Output:   y = 2.0 · Σ_{e∈sel} w_e · Expert_e(x) + SharedExpert(x)
+</pre>
+
+<h3>B.2 Sigmoid vs Softmax: 本质区别</h3>
+
+<div class="mermaid">
+graph LR
+    subgraph "Softmax Routing (竞争性)"
+        L1["logits: [3.2, 1.5, 0.8, ...]"] --> SM["softmax"]
+        SM --> P1["probs: [0.71, 0.14, 0.07, ...]<br/>Σ=1, 互相抑制"]
+    end
+
+    subgraph "Sigmoid Routing (独立性)"
+        L2["logits: [3.2, 1.5, 0.8, ...]"] --> SIG["sigmoid per-expert"]
+        SIG --> P2["scores: [0.96, 0.82, 0.69, ...]<br/>各自独立, 不归一"]
+    end
+</div>
+
+<table>
+<tr><th>特性</th><th>Softmax Routing</th><th>Sigmoid Routing</th></tr>
+<tr><td>Expert 间关系</td><td>零和竞争：一个高→其他低</td><td>独立评估：多个可同时高</td></tr>
+<tr><td>梯度传播</td><td>一个 expert 的梯度影响所有</td><td>每个 expert 的梯度独立</td></tr>
+<tr><td>Load balancing</td><td>自然倾向不均（winner-take-all）</td><td>天然更均匀（无竞争抑制）</td></tr>
+<tr><td>表达能力</td><td>强制稀疏，信息压缩强</td><td>允许 token 被多个 expert 认为 relevant</td></tr>
+<tr><td>归一化</td><td>已归一化（probabilities）</td><td>需要 post-hoc renormalize selected</td></tr>
+<tr><td>使用者</td><td>Mixtral, Switch Transformer</td><td>DeepSeek-V3, MiniMax M3</td></tr>
+</table>
+
+<div class="key-insight">
+<strong>为什么 M3 选择 Sigmoid？</strong>
+<p>当 E=128、top-k=4 时，softmax 会将绝大部分概率集中在 1-2 个 expert 上（128 路竞争太激烈）。Sigmoid 让每个 expert 独立判断 relevance，配合 bias correction 能更好地平衡 load。这与 DeepSeek-V3 的设计思路一致。</p>
+</div>
+
+<h3>B.3 Bias Correction 机制</h3>
+
+<pre>
+e_score_correction_bias: ℝ^{128}   // per-expert learnable scalar
+
+作用：s_e_adjusted = sigmoid(logit_e) + bias_e
+
+如果某 expert 被选中过少 → bias 会在训练中增大 → 增加被选概率
+如果某 expert 被选中过多 → bias 减小
+</pre>
+
+<div class="deep-dive">
+<strong>对比 DeepSeek-V3 的 auxiliary-loss-free balancing：</strong>
+<p>DeepSeek-V3 使用完全相同的 sigmoid + bias correction 设计（它们称之为 auxiliary-loss-free load balancing）。核心 insight 是：bias 提供了一个低带宽的反馈通道，让系统可以在不引入额外 loss 项的情况下动态调整 expert 负载。</p>
+<p>传统方法（如 Switch Transformer）需要一个 auxiliary load balancing loss，它与 LM loss 的权重调节是一个 hyperparameter headache。Bias correction 将负载均衡内化到 routing score 本身。</p>
+</div>
+
+<h3>B.4 Routed Scaling Factor = 2.0</h3>
+
+<pre>
+output = routed_scaling_factor × Σ w_e · Expert_e(x) + SharedExpert(x)
+       = 2.0 × routed_output + shared_output
+</pre>
+
+<p><strong>为什么要乘 2.0？</strong></p>
+
+<p>Sigmoid 输出范围是 (0,1)，renormalize 后 4 个 weights 之和 = 1。但因为 sigmoid score 通常在 0.5~0.9 之间（不像 softmax 那样有 winner 接近 1），实际 expert 输出的 effective scale 被压缩了。Factor 2.0 补偿这个幅度损失，使 MoE layer 的输出幅度与 residual stream 匹配。</p>
+
+<p>对比：DeepSeek-V3 的 routed_scaling_factor = 2.5（因为它 top-8 选 256，sigmoid 值平均更低）。</p>
+
+<h3>B.5 Shared Expert 的角色</h3>
+
+<div class="mermaid">
+graph TD
+    X["token hidden state"] --> GATE["Gate → sigmoid → top-4"]
+    X --> SE["Shared Expert<br/>SwiGLU(6144→3072→6144)<br/>always active"]
+    
+    GATE --> E1["Expert #23"]
+    GATE --> E2["Expert #67"]
+    GATE --> E3["Expert #101"]
+    GATE --> E4["Expert #5"]
+    
+    E1 --> SUM["2.0 × weighted sum"]
+    E2 --> SUM
+    E3 --> SUM
+    E4 --> SUM
+    SE --> ADD["+ shared output"]
+    SUM --> ADD
+    ADD --> OUT["layer output"]
+</div>
+
+<div class="key-insight">
+<strong>Shared Expert 的设计动机：</strong>
+<ul>
+<li>承载所有 token 都需要的通用语言 pattern（语法、基本语义）</li>
+<li>避免 routing 初期的 representation collapse（至少 shared expert 保证基本表达能力）</li>
+<li>稳定训练：即使 routing 出错，shared expert 仍然提供 gradient signal</li>
+<li>M3 中 shared FFN dim = 3072 = routed FFN dim，说明 shared expert 与 routed expert 结构完全相同</li>
+</ul>
+</div>
+
+<h3>B.6 完整 MoE Forward 流程图</h3>
+
+<div class="mermaid">
+flowchart TD
+    INPUT["x ∈ ℝ^{B×L×6144}"] --> |"cast float32"| GATE["x · W_gate → logits ∈ ℝ^{B×L×128}"]
+    GATE --> SIGMOID["sigmoid(logits) → scores"]
+    SIGMOID --> BIAS["scores + bias → adjusted_scores"]
+    BIAS --> TOPK["TopK(adjusted_scores, 4)"]
+    TOPK --> |"expert_ids, weights"| NORM["Renormalize weights<br/>w_e = score_e / Σ scores"]
+    
+    INPUT --> DISPATCH["Dispatch tokens to experts"]
+    NORM --> DISPATCH
+    DISPATCH --> EXPERT["4 × SwiGLU(6144→3072→6144)"]
+    EXPERT --> COMBINE["Weighted combine × 2.0"]
+    
+    INPUT --> SHARED["Shared SwiGLU(6144→3072→6144)"]
+    SHARED --> FINAL_ADD["+ shared"]
+    COMBINE --> FINAL_ADD
+    FINAL_ADD --> OUTPUT["output ∈ ℝ^{B×L×6144}"]
+</div>
+
+<!-- ============================================================ -->
+<h2 id="part-c">Part C: MSA (GQA + Sparse) vs MLA (Latent Compression) — 两条路</h2>
+
+<h3>C.1 问题本质：长 context 下 KV Cache 的两难</h3>
+
+<p>推理时的核心瓶颈：KV Cache 大小 = N × H_kv × d_h × 2（K和V）× num_layers × dtype_bytes</p>
+
+<pre>
+MiniMax M3 @ 1M context (bf16):
+  KV cache = 1M × 4 × 128 × 2 × 60 × 2B = 122.9 GB  (full)
+  With MSA: 只需缓存被索引的 block，但 KV cache 仍全量存储以供 index
+
+DeepSeek-V3 @ 128K context (bf16):
+  KV cache = 128K × 1 × 512 × 2 × 61 × 2B = 16.0 GB  (MLA compressed)
+</pre>
+
+<p>两种思路完全不同：</p>
+
+<table>
+<tr><th></th><th>MSA (MiniMax M3)</th><th>MLA (DeepSeek-V3)</th></tr>
+<tr><td>核心策略</td><td>保留完整 KV，选择性读取</td><td>压缩 KV 到低秩 latent</td></tr>
+<tr><td>KV 存储</td><td>全量存储（+ index cache）</td><td>只存 latent c_kv（512 dim）</td></tr>
+<tr><td>Compute 节省</td><td>attention 计算量降 28×</td><td>attention 计算量不变，KV 带宽降</td></tr>
+<tr><td>Memory 节省</td><td>不节省 KV 存储（但节省 attention 计算的中间内存）</td><td>KV cache 大幅压缩</td></tr>
+</table>
+
+<h3>C.2 MLA 快速回顾</h3>
+
+<pre>
+DeepSeek-V3 MLA:
+  c_kv = x · W_DKV           // (N, 512) latent
+  k = c_kv · W_UK            // (N, H_kv, d_h) on-the-fly reconstruct  
+  v = c_kv · W_UV            // (N, H_kv, d_h) on-the-fly reconstruct
+
+KV cache 只存 c_kv (512 dim) 而非 k+v (2 × H_kv × d_h)
+</pre>
+
+<h3>C.3 架构对比深度分析</h3>
+
+<div class="mermaid">
+graph TB
+    subgraph "MiniMax M3: Sparse Selection"
+        A1["Full KV Cache<br/>(4 heads × 128 dim × N tokens)"]
+        A2["Index Branch<br/>Score all blocks"]
+        A3["Select top-16 blocks<br/>per group"]
+        A4["Attend only to<br/>~2K of 1M tokens"]
+        A1 --> A2 --> A3 --> A4
+    end
+
+    subgraph "DeepSeek-V3: Latent Compression"
+        B1["Compressed KV Cache<br/>(1 head × 512 dim × N tokens)"]
+        B2["Decompress on-the-fly<br/>c_kv → K, V"]
+        B3["Full attention over<br/>all N tokens"]
+        B1 --> B2 --> B3
+    end
+</div>
+
+<table>
+<tr><th>维度</th><th>MiniMax M3 (MSA)</th><th>DeepSeek-V3 (MLA)</th></tr>
+<tr><td><strong>Attention type</strong></td><td>GQA (64Q/4KV) + block-sparse</td><td>MQA via latent (全 head 共享 c_kv)</td></tr>
+<tr><td><strong>理论 attention FLOPs/token @ 1M</strong></td><td>O(N) — linear in sequence length</td><td>O(N²/layers) — still quadratic</td></tr>
+<tr><td><strong>KV cache per token per layer</strong></td><td>4×128×2 = 1024 elements (+ index)</td><td>512 elements (latent only)</td></tr>
+<tr><td><strong>Decode latency @ 1M</strong></td><td>极低 (仅读 17 blocks)</td><td>高 (全 context attention)</td></tr>
+<tr><td><strong>Prefill compute @ 1M</strong></td><td>Index O(N²) + Sparse O(N)</td><td>Full O(N²)</td></tr>
+<tr><td><strong>信息理论风险</strong></td><td>可能遗漏关键 block</td><td>低秩压缩的信息损失</td></tr>
+<tr><td><strong>训练复杂度</strong></td><td>需 KL loss + warmup + stopgrad</td><td>标准 LM loss 即可</td></tr>
+<tr><td><strong>长 context 外推</strong></td><td>天然支持（选 k 个 block 与 N 无关）</td><td>需 YaRN/长 context fine-tune</td></tr>
+<tr><td><strong>兼容 Flash Attention</strong></td><td>需定制 sparse kernel</td><td>完全兼容（解压后标准 MHA）</td></tr>
+</table>
+
+<div class="compare">
+<strong>核心 Tradeoff 总结：</strong>
+<ul>
+<li><strong>MSA 的优势：</strong>Attention compute 线性化（decode 尤其明显），1M context 下 wall-clock speedup 显著。质量与 full attention 持平。</li>
+<li><strong>MSA 的劣势：</strong>KV cache 不压缩，memory 占用大；需要定制 kernel；Index Branch 训练复杂；可能遗漏重要 block（尽管实验显示影响极小）。</li>
+<li><strong>MLA 的优势：</strong>KV cache 压缩到 1/2~1/4；无信息遗漏风险；标准训练无需额外 loss；kernel 兼容性好。</li>
+<li><strong>MLA 的劣势：</strong>Attention compute 仍然 O(N²)；超长 context (>128K) 下 compute 成为瓶颈；需要 on-the-fly decompress 增加 decode 延迟。</li>
+</ul>
+</div>
+
+<h3>C.4 为什么两者不矛盾？可以组合</h3>
+
+<div class="warning">
+<strong>注意：</strong>MSA 和 MLA 解决的是<em>不同层面</em>的问题：
+<ul>
+<li>MLA 解决的是 <strong>KV cache memory</strong>（存储效率）</li>
+<li>MSA 解决的是 <strong>attention compute</strong>（计算效率）</li>
+</ul>
+<p>DeepSeek-V3.2 已经在 MLA 基础上加入了 DSA (DeepSeek Sparse Attention)，说明两者可以叠加：先压缩存储，再稀疏计算。</p>
+<p>但 MiniMax M3 选择 GQA 而非 MLA 作为 base attention 有其考量：</p>
+<ol>
+<li>GQA 实现简单，kernel 生态成熟</li>
+<li>MSA 的 Index Branch 本身与 GQA 的 group 结构天然匹配（per-group 独立 selection）</li>
+<li>MLA 的 on-the-fly decompress 在 1M context decode 时增加延迟，与 sparse selection 的目标冲突</li>
+</ol>
+</div>
+
+<h3>C.5 Position Encoding 对比</h3>
+
+<table>
+<tr><th></th><th>MiniMax M3</th><th>DeepSeek-V3</th></tr>
+<tr><td>方案</td><td>Partial RoPE (50%)</td><td>RoPE on decoupled rope dims in latent</td></tr>
+<tr><td>RoPE 维度</td><td>64 of 128</td><td>64 of 128 (decoupled q_rope, k_rope)</td></tr>
+<tr><td>无位置维度</td><td>后 64 dim 不编码位置</td><td>latent 部分 (512 dim) 无位置信息</td></tr>
+<tr><td>rope_theta</td><td>5,000,000</td><td>10,000 (base) + YaRN scaling</td></tr>
+<tr><td>长 context 策略</td><td>高 base theta 直接外推</td><td>YaRN progressive scaling</td></tr>
+</table>
+
+<div class="deep-dive">
+<strong>Partial RoPE 的信息论直觉：</strong>
+<p>一个 head 的 128 维可以被理解为两种互补信号：</p>
+<ul>
+<li><strong>前 64 维 (with RoPE)：</strong>位置感知 → 编码相对距离、顺序关系、local pattern</li>
+<li><strong>后 64 维 (no RoPE)：</strong>位置不变 → 编码语义相似性、跨距离的概念匹配</li>
+</ul>
+<p>这让 attention score = position_similarity + semantic_similarity 两部分叠加。在 block scoring 时，semantic 维度帮助 Index Branch 找到语义相关但物理距离远的 block。</p>
+</div>
+
+<h3>C.6 总结对比图</h3>
+
+<div class="mermaid">
+graph TB
+    subgraph "设计哲学对比"
+        DS["DeepSeek-V3<br/>• 压缩 KV（MLA）<br/>• 全 context attention<br/>• 后期加 DSA 稀疏<br/>• Top-8 × 256 experts<br/>• MTP 推测解码"]
+        MM["MiniMax M3<br/>• 保留完整 KV（GQA）<br/>• 从训练就稀疏（MSA）<br/>• 原生 1M context<br/>• Top-4 × 128 experts<br/>• MTP 仅训练辅助"]
+    end
+
+    DS -.-> |"共同点"| COMMON["Sigmoid routing<br/>Bias correction<br/>Shared expert<br/>Partial RoPE<br/>SwiGLU activation"]
+    MM -.-> COMMON
+</div>
+
+<!-- ============================================================ -->
+<h2>检验理解</h2>
+
+<div class="quiz">
+<details>
+<summary>Q1: MSA 的 Index Branch 为什么 K 只有 1 个 head，而 Q 有 4 个？</summary>
+<p><strong>答：</strong>K 被所有 4 个 GQA group 共享（N×1×d_idx），每个 group 有自己的 Q head (N×1×d_idx per group)。这样每个 group 用自己的 Q 对共享的 K 打分，得到 group-specific 的 block selection。如果 K 也是 per-group，则参数和计算量翻 4 倍，但实验表明共享 K 足够（因为 K 的角色只是提供 token 的通用表征供各 group 的 Q 来查询）。</p>
+</details>
+</div>
+
+<div class="quiz">
+<details>
+<summary>Q2: 如果把 block_size 从 128 减小到 32，会发生什么？</summary>
+<p><strong>答：</strong>选 16 blocks × 32 tokens = 512 tokens/query（vs 原来的 2048）。要保持相同 budget 需 k=64。Block 数量从 8K→32K，Index Branch 计算不变（仍是 token-level scoring 后 max-pool），但 top-k 在 32K candidates 上选 64 个更昂贵。Paper Table 4 显示 block 32 vs 128 在相同 total budget 下质量几乎无差异，但小 block 的 kernel 效率更差（MMA arithmetic intensity ∝ B_k）。</p>
+</details>
+</div>
+
+<div class="quiz">
+<details>
+<summary>Q3: 为什么 M3 用 Sigmoid routing 而非 Softmax？用一句话解释核心区别。</summary>
+<p><strong>答：</strong>Softmax 让 128 个 expert 零和竞争导致 winner-take-all 的 load 不均衡；Sigmoid 让每个 expert 独立评估 token 的 relevance，配合 bias correction 天然实现负载均衡，无需额外 auxiliary loss。</p>
+</details>
+</div>
+
+<div class="quiz">
+<details>
+<summary>Q4: DeepSeek-V3 如果要处理 1M context，面临什么瓶颈？MSA 如何规避？</summary>
+<p><strong>答：</strong>MLA 虽然压缩了 KV cache 存储，但 attention compute 仍是 O(N²)。1M context 下 prefill 的 attention FLOPs 爆炸。MSA 将 Main Branch 变为 O(N·k·B_k) 线性复杂度，decode 时每个 token 只读 2K tokens 的 KV，wall-clock 延迟不随 context 增长。这也是为什么 DeepSeek 后来在 V3.2 中引入了 DSA。</p>
+</details>
+</div>
+
+<div class="footer">
+<p><strong>推荐阅读：</strong></p>
+<ul>
+<li><a href="https://arxiv.org/abs/2606.13392">arXiv:2606.13392</a> — 完整 MSA paper，重点 Section 3 (Architecture) + Section 4 (Kernel Design) + Appendix B (Ablations)</li>
+<li><a href="https://arxiv.org/abs/2502.11089">arXiv:2502.11089</a> — NSA (Native Sparse Attention, DeepSeek)，MSA 的直接对标</li>
+<li><a href="https://arxiv.org/abs/2405.04434">DeepSeek-V2 paper</a> — MLA 的原始设计论文</li>
+</ul>
+<p><strong>下一步方向：</strong></p>
+<ul>
+<li>MSA kernel 的 KV-outer iteration 为什么比 Q-outer 好？（FLOPs/IO 分析）</li>
+<li>MSA 与 NSA/DSA 的详细三方对比（token-level vs block-level, relu vs softmax indexer）</li>
+<li>M3 的 SwiGLU clamp 机制的数值稳定性分析</li>
+</ul>
+<p><em>有任何不清楚的地方，随时向 agent 提问。</em></p>
+</div>
+
+</body>
+</html>

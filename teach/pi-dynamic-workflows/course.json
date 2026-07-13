@@ -1,0 +1,10 @@
+{
+  "title": "pi-dynamic-workflows 插件实现原理",
+  "lessons": [
+    {
+      "title": "pi-dynamic-workflows 实现原理",
+      "path": "lessons/0001-workflow-implementation.html"
+    }
+  ],
+  "references": []
+}

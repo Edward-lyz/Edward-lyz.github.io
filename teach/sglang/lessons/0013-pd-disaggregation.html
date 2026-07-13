@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第十三课：Prefill-Decode Disaggregation</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script defer src="../assets/quiz.js"></script>
+</head>
+<body>
+<h1>Prefill-Decode Disaggregation</h1>
+<p class="outcome">学完本课，你能判断 PD 的系统收益是否覆盖 handoff 成本，解释 destination KV 必须先分配的原因，并追踪 PREBUILT 如何进入 decode。</p>
+
+<h2>PD 拆开的不是一个 request 的语义</h2>
+<p>Prefill instance 计算 prompt KV，Decode instance 继续生成；两者拥有独立 Scheduler、request row 与 physical KV pool。request id 与 token history 跨角色保持一致，但 physical slot ids 只在各自进程地址空间内有意义。因此不能把 prefill 的 slot id 直接当成 decode slot id。</p>
+
+<h2>PD 不是无条件降低单请求延迟</h2>
+
+<table>
+<thead><tr><th>统一调度</th><th>PD disaggregation</th></tr></thead>
+<tbody>
+<tr><td>同一 pool 内完成 prefill 与 decode</td><td>两个独立 Scheduler/pool 做 handoff</td></tr>
+<tr><td>无跨实例 KV transfer</td><td>增加 bootstrap、metadata 与 KV transfer</td></tr>
+<tr><td>Prefill compute 可能阻塞 decode</td><td>资源专用化，queue 与 interference 可独立控制</td></tr>
+<tr><td>容量比例固定在同一实例</td><td>Prefill/Decode replicas 可按 workload 扩缩</td></tr>
+</tbody>
+</table>
+
+<p>对单个 request，PD path 多了显式 handoff；系统收益来自减少 queueing 与 prefill/decode interference。一个有用的判断式是：</p>
+<pre><code>PD worthwhile when:
+reduced_queueing + reduced_interference
+    &gt; bootstrap + metadata + KV_transfer + staging</code></pre>
+<p>这不是源码里的常数公式，而是实验假设。短 prompt、低负载或慢网络下右侧可能占优；长 prompt、高并发和可独立扩容时左侧才可能占优。因此 benchmark 必须报告 transfer bytes/time 与两侧 queue time，不能只比较 model forward。</p>
+
+<h2>Decode 先建立目的地址</h2>
+<pre><code>router sends request metadata to both roles
+
+Decode:
+  handshake/bootstrap
+  → match optional local decode-side prefix
+  → allocate destination request row
+  → preallocate destination KV pages
+  → send destination page indices + metadata buffer id
+
+Prefill:
+  bootstrap sender
+  → schedule and compute prompt KV
+  → send KV into decode-provided destinations
+  → poll transfer completion
+
+Decode:
+  poll receiver
+  → commit transferred KV to request
+  → move request into waiting/prebuilt side
+  → ForwardMode.PREBUILT
+  → continue normal decode</code></pre>
+<p>RDMA/transfer engine 需要目的地址才能发起写入；更重要的是，Decode Scheduler 必须在接收前把这些 pages 计入自己的 memory budget，防止 running decode 同时占用它们。<span class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/disaggregation/decode.py#L275-L620">decode.py:275-620</a> 与 <a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/disaggregation/prefill.py#L104-L330">prefill.py:104-330</a>。</span></p>
+
+<h2>PREBUILT 表示 KV 已存在，不再重跑 prompt</h2>
+<p>Transfer 成功后，Decode 侧构造 <code>ScheduleBatch</code>，<code>prepare_for_prebuilt</code> 从已分配 request row 读取 <code>out_cache_loc</code>，填充 sequence metadata，并设置 <code>ForwardMode.PREBUILT</code>。<code>process_prebuilt</code> 接入最后 token、cache 与采样状态。这个 batch 模拟完成后的 prefill transition，但不会重新执行整段 prompt forward。</p>
+<div class="invariant"><strong>PREBUILT 是状态衔接，不是 fake KV</strong>真实 KV 已由 transfer 写入 Decode pool；PREBUILT 只构造 Scheduler/forward 所需 metadata。</div>
+<p class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/disaggregation/decode_schedule_batch_mixin.py#L23-L145">decode_schedule_batch_mixin.py:23-145</a>。</p>
+
+<h2>Decode queue 优先恢复 retracted requests</h2>
+<p><code>process_decode_queue</code> 先尝试为 retracted requests 恢复预留。如果仍有 retracted requests 无法恢复，它不会继续接纳新的 preallocation；否则才把 preallocated connections 移到 transfer queue，poll completed transfers，并把成功 requests 加到 waiting side。这维持了 memory accounting 与 starvation 边界。<span class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/disaggregation/decode.py#L1973-L2005">decode.py:1973-2005</a>。</span></p>
+
+<h2>异构 TP 与 backend 只改变 transfer contract</h2>
+<p>Mooncake 与 NIXL 提供不同 transport；prefill/decode TP layout 不一致时可能需要 staging 和 KV head mapping。但不变量不变：Decode 决定 destination ownership，Prefill 只写入已协商目标，成功 commit 后 request 才可进入 PREBUILT/decode。</p>
+<p class="source-note">配置与限制依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/docs/advanced_features/pd_disaggregation.md">PD disaggregation guide</a>。</p>
+
+<h2>最小自检</h2>
+<div class="quiz" data-answer="1">
+<h3>PD transfer 的正确关键顺序是哪一项？</h3>
+<label><input type="radio" name="q13" value="1">Decode 预分配、Prefill 传输、PREBUILT</label>
+<label><input type="radio" name="q13" value="2">Prefill 传输、Decode 猜址、PREBUILT</label>
+<label><input type="radio" name="q13" value="3">PREBUILT、Decode 分配、Prefill 重算</label>
+<label><input type="radio" name="q13" value="4">Decode 重算、Prefill 释放、普通 PREFILL</label>
+<div class="feedback correct" aria-live="polite">正确。Decode 先拥有并预留 destination slots，Prefill 才能写入；成功后用 PREBUILT 衔接状态。</div>
+<div class="feedback incorrect" aria-live="polite">不对。Physical slot ids 属于 Decode pool，必须由 Decode 先分配并协商，transfer 成功后才构造 PREBUILT。</div>
+</div>
+<div class="quiz" data-answer="1">
+<h3>哪种 workload 最可能让 PD handoff 成本超过资源专用化收益？</h3>
+<label><input type="radio" name="q13b" value="1">短 prompt、低负载、慢传输</label>
+<label><input type="radio" name="q13b" value="2">长 prompt、高排队、快传输</label>
+<label><input type="radio" name="q13b" value="3">长 prefill、强干扰、快网络</label>
+<label><input type="radio" name="q13b" value="4">高并发、独立扩容、低延迟</label>
+<div class="feedback correct" aria-live="polite">正确。此时可减少的 queue/interference 很小，而 bootstrap 与 KV transfer 仍是固定新增路径。</div>
+<div class="feedback incorrect" aria-live="polite">不对。长 prefill、高干扰和快速 transport 更可能让资源专用化覆盖 handoff 成本。</div>
+</div>
+
+</body>
+</html>

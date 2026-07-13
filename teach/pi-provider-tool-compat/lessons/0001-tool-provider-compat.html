@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 01: pi 如何用一套工具抽象兼容 OpenAI / Claude Code / Google</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+</head>
+<body>
+
+<h1>一套工具定义，五种模型 API</h1>
+<p class="subtitle">pi 的 canonical IR + convertTools adapter + API registry seam · 基于 pi v0.79.6 源码 · 2026-06-18</p>
+
+<nav class="toc">
+<strong>目录</strong>
+<ul>
+<li><a href="#problem">问题：N 个模型 × M 个工具</a></li>
+<li><a href="#ir">解法：中间放一套 canonical IR</a></li>
+<li><a href="#tool">工具只定义一次（TypeBox = JSON Schema）</a></li>
+<li><a href="#seam">分发点：API registry 与 model.api</a></li>
+<li><a href="#converttools">convertTools：同一份 schema，四种信封</a></li>
+<li><a href="#inbound">回程：把 tool call 解析回 canonical ToolCall</a></li>
+<li><a href="#compat">compat flags：吸收 provider 怪癖</a></li>
+<li><a href="#claudecode">Claude Code 的特殊处理</a></li>
+<li><a href="#quiz">检查理解</a></li>
+</ul>
+</nav>
+
+<h2 id="problem">问题：N 个模型 × M 个工具</h2>
+
+<p>pi 支持 OpenAI、Anthropic、Google、Mistral、Bedrock 等十几家 provider。它们的 tool calling 线格式（wire format）互不相同：OpenAI 把参数包在 <code>function.parameters</code> 里，Anthropic 叫 <code>input_schema</code>，Google 叫 <code>parametersJsonSchema</code>。</p>
+
+<p>如果让每个工具去适配每个模型，就是 <code>N × M</code> 份适配代码。加一个 provider 要改所有工具，加一个工具要懂所有 provider。这是组合爆炸。</p>
+
+<div class="key-insight">
+pi 的答案是经典的 <strong>hub-and-spoke</strong>（中心辐射）：在所有 provider 中间放一套与 provider 无关的 <strong>canonical IR</strong>（规范中间表示）。工具只面向 IR 写一次，每个 provider 只写一个 IR ↔ 自己格式的 adapter。于是 <code>N × M</code> 塌缩成 <code>N + M</code>。
+</div>
+
+<h2 id="ir">解法：中间放一套 canonical IR</h2>
+
+<p>这套 IR 定义在 <code>@earendil-works/pi-ai/dist/types.d.ts</code>，是整个兼容层的"普通话"。几个核心类型：</p>
+
+<table>
+<tr><th>类型</th><th>含义</th></tr>
+<tr><td><code>Tool</code></td><td><code>{ name, description, parameters }</code>——parameters 是 TypeBox schema</td></tr>
+<tr><td><code>Context</code></td><td><code>{ systemPrompt?, messages, tools? }</code>——一次请求的全部输入</td></tr>
+<tr><td><code>ToolCall</code></td><td><code>{ type:"toolCall", id, name, arguments }</code>——模型要调用的工具</td></tr>
+<tr><td><code>ToolResultMessage</code></td><td><code>{ role:"toolResult", toolCallId, content, isError }</code>——工具执行结果</td></tr>
+<tr><td><code>Model&lt;TApi&gt;</code></td><td>带 <code>api</code>、<code>provider</code>、<code>baseUrl</code>、<code>compat</code> 等字段的模型描述</td></tr>
+</table>
+
+<p>所有 pi 内部代码（agent loop、你写的工具、subagent）都只跟这套 IR 打交道。模型差异被关在 provider adapter 里。</p>
+
+<div class="flow-diagram">  你的工具 / agent loop
+        │  只认 canonical IR（Tool / Context / ToolCall）
+        ▼
+  ┌─────────────────────────────┐
+  │   pi-ai：stream(model, ctx)  │  ← 唯一入口
+  └─────────────────────────────┘
+        │  按 model.api 分发
+        ├──────────┬──────────┬──────────┬─────────┐
+        ▼          ▼          ▼          ▼         ▼
+   anthropic   openai-    openai-     google-   bedrock-
+   -messages   completions responses  generative converse
+        │          │          │          │         │
+   各自 convertTools / convertMessages，翻译成自己的 wire format
+        ▼          ▼          ▼          ▼         ▼
+     Claude      GPT/       GPT/        Gemini    Bedrock
+     (incl.      兼容厂商    Codex
+     Claude Code)</div>
+
+<h2 id="tool">工具只定义一次（TypeBox = JSON Schema）</h2>
+
+<p>关键设计：工具的参数用 <a href="https://github.com/sinclairzx81/typebox">TypeBox</a> 描述，而 TypeBox 直接<strong>就是</strong> JSON Schema（运行时是普通 JSON 对象，带一点 Symbol 元数据）。这一点是整个兼容性的地基——因为所有主流 LLM API 的 tool 参数都接受 JSON Schema。</p>
+
+<div class="formula-box">// pi docs · extensions.md — 注册一个工具
+pi.registerTool({
+  name: "greet",
+  label: "Greet",
+  description: "Greet someone by name",
+  parameters: Type.Object({                       // ← TypeBox，本质是 JSON Schema
+    name: Type.String({ description: "Name to greet" }),
+  }),
+  async execute(toolCallId, params, signal, onUpdate, ctx) {
+    return { content: [{ type: "text", text: `Hello, ${params.name}!` }], details: {} };
+  },
+});</div>
+
+<p>你在上一课（<a href="/teach/pi-dynamic-workflows/lessons/0001-workflow-implementation.html">workflow 实现原理</a>）见过 subagent 拿到的 <code>customTools</code>，它们就是这种 <code>AgentTool</code>。同一个定义，下面会被翻译给任意模型。</p>
+
+<div class="key-insight">
+源码里 <code>convertTools</code> 注释反复写着一句话：<code>// TypeBox already generates JSON Schema</code>。也就是 <code>tool.parameters</code> 这块 schema body 几乎是<strong>原样透传</strong>的，provider adapter 只负责换外层信封。
+</div>
+
+<h2 id="seam">分发点：API registry 与 model.api</h2>
+
+<p>多态发生在一个很小的地方。<code>pi-ai</code> 维护一个 <code>Map&lt;api, {stream, streamSimple}&gt;</code> 注册表，启动时把 9 个内置 API 注册进去：</p>
+
+<div class="formula-box">// register-builtins.js
+registerApiProvider({ api: "anthropic-messages",  stream: streamAnthropic,        ... });
+registerApiProvider({ api: "openai-completions",  stream: streamOpenAICompletions, ... });
+registerApiProvider({ api: "openai-responses",    stream: streamOpenAIResponses,   ... });
+registerApiProvider({ api: "google-generative-ai",stream: streamGoogle,            ... });
+registerApiProvider({ api: "bedrock-converse-stream", ... });   // 等等，共 9 个</div>
+
+<p>真正的请求入口 <code>stream()</code> 只做一件事：拿 <code>model.api</code> 当 key 查表，调对应的实现。</p>
+
+<div class="formula-box">// stream.js — 整个分发逻辑就这么点
+export function stream(model, context, options) {
+  const provider = getApiProvider(model.api);          // ← 按 api 查注册表
+  if (!provider) throw new Error(`No API provider for: ${model.api}`);
+  return provider.stream(model, context, withEnvApiKey(model, options));
+}</div>
+
+<div class="key-insight">
+这就是兼容多模型的 <strong>seam（接缝）</strong>。<code>model.api</code> 是一个开放字符串类型（<code>KnownApi | (string &amp; {})</code>），所以 <code>pi.registerProvider()</code> 注册的自定义 provider 可以挂上自己的 <code>streamSimple</code>，无需改动任何上层代码。加模型 = 往 Map 里加一项。
+</div>
+
+<h2 id="converttools">convertTools：同一份 schema，四种信封</h2>
+
+<p>这是本课最该记住的一张表。每个 provider 的 <code>convertTools</code> 都接收同一个 <code>Tool[]</code>，输出不同 wire format，但 <strong>schema body（<code>tool.parameters</code>）是共享的</strong>：</p>
+
+<table>
+<tr><th>API</th><th>输出形状（信封）</th><th>schema 放哪</th></tr>
+<tr><td><code>openai-completions</code></td><td><code>{ type:"function", function:{ name, description, parameters }}</code></td><td><code>function.parameters</code> 原样透传</td></tr>
+<tr><td><code>openai-responses</code></td><td><code>{ type:"function", name, description, parameters, strict }</code></td><td>顶层 <code>parameters</code>（不嵌套）</td></tr>
+<tr><td><code>anthropic-messages</code></td><td><code>{ name, description, input_schema:{ type:"object", properties, required }}</code></td><td>拆出 <code>properties</code>/<code>required</code> 塞进 <code>input_schema</code></td></tr>
+<tr><td><code>google-generative-ai</code></td><td><code>{ functionDeclarations:[{ name, description, parametersJsonSchema }]}</code></td><td><code>parametersJsonSchema</code> 原样透传</td></tr>
+</table>
+
+<p>对比 OpenAI 和 Anthropic 两段真实源码，差异一目了然：</p>
+
+<div class="formula-box">// openai-completions.js — convertTools
+return tools.map((tool) => ({
+  type: "function",
+  function: {
+    name: tool.name,
+    description: tool.description,
+    parameters: tool.parameters,            // TypeBox already generates JSON Schema
+  },
+}));
+
+// anthropic.js — convertTools
+return tools.map((tool) => ({
+  name: tool.name,
+  description: tool.description,
+  input_schema: {                           // ← Anthropic 管它叫 input_schema
+    type: "object",
+    properties: tool.parameters.properties ?? {},
+    required:   tool.parameters.required ?? [],
+  },
+}));</div>
+
+<div class="success-box">
+<strong>第一性原理</strong>：之所以能这么省事，是因为 pi 选择把 IR 的工具参数直接做成 JSON Schema。各家 API 在 tool 参数上本来就向 JSON Schema 收敛，所以"翻译"退化成"换个字段名 / 套个外壳"。选对 IR，适配器就薄。
+</div>
+
+<h2 id="inbound">回程：把 tool call 解析回 canonical ToolCall</h2>
+
+<p>出站（pi → 模型）是 convertTools。入站（模型 → pi）是反向：每个 provider 的流解析器把自己格式的 tool call 事件，统一成 canonical <code>ToolCall { id, name, arguments }</code>。上层 agent loop 永远只看到这一种形状。</p>
+
+<p>这里有个跨 provider 的脏活：<strong>tool call ID 归一</strong>。OpenAI Responses API 生成的 ID 可能 450+ 字符、含 <code>|</code> 等特殊符号；而 Anthropic 要求 ID 匹配 <code>^[a-zA-Z0-9_-]+$</code> 且 ≤64 字符。当你把一段对话历史从一个模型接力给另一个模型（cross-provider handoff），<code>transformMessages()</code> 会重写这些 ID，保证下游 API 不报错。</p>
+
+<div class="formula-box">// transform-messages.js
+// Normalize tool call ID for cross-provider compatibility.
+// OpenAI Responses API generates IDs that are 450+ chars with special chars like `|`.
+// Anthropic APIs require IDs matching ^[a-zA-Z0-9_-]+$ (max 64 chars).</div>
+
+<p>同一个文件还顺手做了另一件兼容活：如果目标模型不支持图像（<code>model.input</code> 不含 <code>"image"</code>），就把消息里的图片替换成 <code>(image omitted: ...)</code> 占位文本，而不是直接报错。</p>
+
+<h2 id="compat">compat flags：吸收 provider 怪癖</h2>
+
+<p>光有 convertTools 还不够，因为同样号称"OpenAI 兼容"的厂商各有怪癖。pi 用一组 <code>compat</code> 布尔开关来吸收这些差异。<code>detectCompat()</code> 先按 <code>provider</code> / <code>baseUrl</code> 自动探测，<code>getCompat()</code> 再让显式配置覆盖探测值：</p>
+
+<table>
+<tr><th>compat flag</th><th>解决的怪癖</th></tr>
+<tr><td><code>supportsDeveloperRole</code></td><td>reasoning 模型用 <code>developer</code> 角色还是退回 <code>system</code></td></tr>
+<tr><td><code>maxTokensField</code></td><td>用 <code>max_completion_tokens</code> 还是老的 <code>max_tokens</code></td></tr>
+<tr><td><code>requiresToolResultName</code></td><td>tool result 消息是否必须带 <code>name</code> 字段</td></tr>
+<tr><td><code>thinkingFormat</code></td><td>thinking 参数格式：openai / deepseek / qwen / zai / together ...</td></tr>
+<tr><td><code>supportsStrictMode</code></td><td>tool 定义里能否带 <code>strict</code> 字段（有些厂商会拒绝未知字段）</td></tr>
+</table>
+
+<p>例如 Moonshot、Together、Cloudflare AI Gateway 等被探测为"非标准"，pi 自动给它们用 <code>max_tokens</code> 并去掉 <code>strict</code>。这意味着接一个新的 OpenAI 兼容端点，通常<strong>不写代码</strong>，只在 <code>models.json</code> 里设几个 compat flag 就行（见 <a href="https://github.com/earendil-works/pi-mono">models.md</a>）。</p>
+
+<h2 id="claudecode">Claude Code 的特殊处理</h2>
+
+<p>你的问题特意点了 Claude Code，它确实是个有意思的特例。当 API key 是 Anthropic 的 OAuth token（以 <code>sk-ant-oat</code> 开头，来自 Claude Pro/Max 订阅登录），pi 必须把自己<strong>伪装成 Claude Code CLI</strong> 才能用这条订阅通道。<code>anthropic.js</code> 里做了三件事：</p>
+
+<ol style="padding-left:1.5rem; margin-bottom:1rem;">
+<li><strong>身份 headers</strong>：加上 <code>user-agent: claude-cli/&lt;version&gt;</code>、<code>x-app: cli</code>、<code>anthropic-beta: claude-code-20250219,oauth-2025-04-20</code>。</li>
+<li><strong>强制 system prompt</strong>：第一条 system 文本必须是 <code>"You are Claude Code, Anthropic's official CLI for Claude."</code>，你真正的 system prompt 拼在后面。</li>
+<li><strong>工具名归一</strong>：<code>toClaudeCodeName()</code> 把工具名按大小写映射回 Claude Code 的官方写法——<code>read</code> → <code>Read</code>、<code>bash</code> → <code>Bash</code>、<code>edit</code> → <code>Edit</code> 等（共 18 个 CC 内置工具名）。</li>
+</ol>
+
+<div class="formula-box">// anthropic.js
+function isOAuthToken(apiKey) { return apiKey.includes("sk-ant-oat"); }
+
+const claudeCodeTools = ["Read","Write","Edit","Bash","Grep","Glob",
+  "AskUserQuestion","EnterPlanMode","ExitPlanMode","KillShell",
+  "NotebookEdit","Skill","Task","TaskOutput","TodoWrite","WebFetch","WebSearch"];
+const toClaudeCodeName = (name) => ccToolLookup.get(name.toLowerCase()) ?? name;
+
+// convertTools 里：
+name: isOAuthToken ? toClaudeCodeName(tool.name) : tool.name,</div>
+
+<div class="key-insight">
+注意这个映射是<strong>双向</strong>的：出站把 <code>read</code> 改成 <code>Read</code> 发给 Claude；入站 <code>fromClaudeCodeName()</code> 再把模型返回的 <code>Read</code> 映射回你工具的真实名字 <code>read</code>，这样上层 agent loop 完全无感。兼容的代价被精确地隔离在 anthropic adapter 内部——这正是 hub-and-spoke 的价值：脏活只发生在辐条末端，中心保持干净。
+</div>
+
+<p>所以"兼容 Claude Code"不是一个独立机制，而是同一套 adapter 模式的一个分支：检测到 OAuth → 走 CC 身份 + 工具名归一，其余照旧。</p>
+
+<h2 id="quiz">检查理解</h2>
+
+<div class="quiz" id="q1">
+<h3>问题 1</h3>
+<p class="quiz-q">pi 用同一份 <code>tool.parameters</code> 喂给 OpenAI 和 Anthropic，靠的是什么前提？</p>
+<ul class="quiz-options" onclick="handleQuiz(event,'q1')" onkeydown="handleQuiz(event,'q1')">
+<li data-val="a">pi 在运行时为每个模型重新生成一份专用 schema 对象</li>
+<li data-val="b" data-correct>TypeBox 定义本身就是 JSON Schema，各家 API 的 tool 参数都收敛到 JSON Schema，翻译只需换信封</li>
+<li data-val="c">pi 把所有工具参数都序列化成字符串，模型自己解析</li>
+<li data-val="d">OpenAI 和 Anthropic 的 tool 格式其实完全一样，无需翻译</li>
+</ul>
+<div class="quiz-explain">TypeBox schema 运行时就是带元数据的 JSON 对象。convertTools 注释明说 "TypeBox already generates JSON Schema"，schema body 原样透传，OpenAI 套 function.parameters、Anthropic 拆进 input_schema，只是外层信封不同。</div>
+</div>
+
+<div class="quiz" id="q2">
+<h3>问题 2</h3>
+<p class="quiz-q">要给 pi 接一个全新的、API 格式非标准的模型 provider，最小改动发生在哪里？</p>
+<ul class="quiz-options" onclick="handleQuiz(event,'q2')" onkeydown="handleQuiz(event,'q2')">
+<li data-val="a">修改 agent loop 和每一个已注册的工具，让它们认识新格式</li>
+<li data-val="b">改写 canonical IR 的类型定义，增加新字段</li>
+<li data-val="c" data-correct>用 registerProvider 注册一个新 api 名 + 自己的 streamSimple，registry 按 model.api 分发，上层无感</li>
+<li data-val="d">在 stream() 里加一个 if-else 分支判断新 provider</li>
+</ul>
+<div class="quiz-explain">分发是 getApiProvider(model.api) 查表，api 是开放字符串类型。注册新 provider 等于往 Map 加一项，stream() / agent loop / 工具一行都不用动。这就是 seam 的意义。</div>
+</div>
+
+<div class="quiz" id="q3">
+<h3>问题 3</h3>
+<p class="quiz-q">用 Claude Pro 订阅（OAuth token）跑 pi 时，工具名 <code>read</code> 会怎样？</p>
+<ul class="quiz-options" onclick="handleQuiz(event,'q3')" onkeydown="handleQuiz(event,'q3')">
+<li data-val="a">原样 <code>read</code> 发给 Claude，返回也是 <code>read</code>，无特殊处理</li>
+<li data-val="b" data-correct>出站归一成 <code>Read</code>（CC 官方写法），入站再映射回 <code>read</code>，上层无感</li>
+<li data-val="c">被拒绝，OAuth 通道不允许自定义工具</li>
+<li data-val="d">pi 自动改用 OpenAI 通道绕开 Claude Code 限制</li>
+</ul>
+<div class="quiz-explain">检测到 sk-ant-oat token 时，pi 伪装成 Claude Code CLI：toClaudeCodeName 出站把 read→Read，fromClaudeCodeName 入站把 Read→read。脏活全锁在 anthropic adapter 内，hub-and-spoke 的辐条末端。</div>
+</div>
+
+<h2>下一步</h2>
+
+<p><strong>主源（最高信任度，建议精读）</strong>：pi 文档 <code>docs/custom-provider.md</code>——它把本课的机制从"读源码"变成"你能动手配"，包含 <code>registerProvider</code>、<code>api</code> 类型表、<code>compat</code> 全字段、以及自定义 <code>streamSimple</code> 的完整骨架。配合 <code>@earendil-works/pi-ai/dist/providers/openai-completions.js</code> 和 <code>anthropic.js</code> 对读。</p>
+
+<p>本课参考文档：<a href="../reference/0001-tool-compat-cheatsheet.html">工具兼容速查表</a>（convertTools 四格式 + compat flags + Claude Code 映射）。</p>
+
+<div class="nav">
+<p>系列上一课：<a href="/teach/pi-dynamic-workflows/lessons/0001-workflow-implementation.html">pi-dynamic-workflows 实现原理</a> · 相关：<a href="/teach/subagent-design-philosophy/lessons/0001-subagent-design-philosophy.html">Subagent 编排设计哲学</a></p>
+<p>有疑问随时问我——我是你的 Agent 老师，可以带你逐行走读任意一个 provider 的 convertMessages，或者一起写一个 custom provider。</p>
+</div>
+
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

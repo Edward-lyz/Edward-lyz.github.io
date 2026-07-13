@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>课 01: GLM-5.2 架构与 IndexShare —— DSA 之上的跨层索引复用</title>
+<style>
+  body { font-family: 'Palatino Linotype', 'Book Antiqua', Palatino, serif; max-width: 980px; margin: 2em auto; padding: 0 1.5em; color: #2a2a2a; line-height: 1.8; }
+  h1 { font-size: 1.7em; border-bottom: 2px solid #222; padding-bottom: 0.3em; }
+  h2 { font-size: 1.34em; margin-top: 2.4em; color: #1a1a1a; border-left: 4px solid #1e88e5; padding-left: 0.6em; }
+  h3 { font-size: 1.12em; margin-top: 1.7em; color: #444; }
+  h4 { font-size: 1.0em; margin-top: 1.2em; font-style: italic; color: #555; }
+  .mermaid { background: #fafafa; border: 1px solid #ddd; border-radius: 4px; padding: 1em; margin: 1.5em 0; overflow-x: auto; text-align: center; }
+  table { border-collapse: collapse; margin: 1em 0; width: 100%; }
+  th, td { border: 1px solid #ccc; padding: 0.45em 0.8em; text-align: left; font-size: 0.9em; }
+  th { background: #eef2f7; }
+  .key-insight { background: #fffde7; border-left: 4px solid #f9a825; padding: 0.8em 1.1em; margin: 1.2em 0; }
+  .deep-dive { background: #e8f5e9; border-left: 4px solid #43a047; padding: 0.8em 1.1em; margin: 1.2em 0; }
+  .warning { background: #fce4ec; border-left: 4px solid #e53935; padding: 0.8em 1.1em; margin: 1.2em 0; }
+  .compare { background: #e3f2fd; border-left: 4px solid #1e88e5; padding: 0.8em 1.1em; margin: 1.2em 0; }
+  .citation { font-size: 0.85em; color: #666; }
+  code { background: #f0f0f0; padding: 0.15em 0.4em; border-radius: 3px; font-size: 0.88em; font-family: 'SF Mono', Menlo, monospace; }
+  pre { background: #f8f8f8; padding: 1em; border-radius: 4px; overflow-x: auto; font-size: 0.85em; line-height: 1.5; }
+  .footer { margin-top: 3em; padding-top: 1em; border-top: 1px solid #ddd; font-size: 0.9em; color: #666; }
+  .nav { font-size: 0.85em; color: #888; margin-bottom: 2em; }
+  .toc { background: #f9f9f9; border: 1px solid #eee; padding: 0.8em 1.5em; margin: 1.5em 0; }
+  .toc ul { margin: 0.3em 0; padding-left: 1.5em; }
+  .quiz { background: #f3e5f5; border: 1px solid #ce93d8; border-radius: 4px; padding: 1em; margin: 1.3em 0; }
+  .quiz summary { cursor: pointer; font-weight: bold; }
+  mark { background: #fff176; padding: 0 0.2em; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+</head>
+<body>
+<div class="nav">课 01 · <a href="0002-sglang-day0-enablement.html">课 02：SGLang Day-0 适配</a> · <a href="../reference/architecture-cheatsheet.html">架构速查卡</a> · <a href="../reference/glossary.html">术语表</a></div>
+
+<h1>GLM-5.2 架构与 IndexShare<br><small style="font-size:0.62em;color:#777;">DSA 之上的跨层索引复用 —— 你已知 DSA，本课只讲"增量"</small></h1>
+
+<div class="toc">
+<strong>目录</strong>
+<ul>
+<li><a href="#p0">Part 0：一句话定位 —— 相对 DeepSeek-V3.2 DSA 的增量是什么</a></li>
+<li><a href="#p1">Part 1：30 秒 forward pass 全景（带维度）</a></li>
+<li><a href="#p2">Part 2：IndexShare —— 本课主角</a></li>
+<li><a href="#p3">Part 3：三方对比 —— DSA / MSA / IndexShare 的"层间"新轴</a></li>
+<li><a href="#p4">Part 4：检索练习（合上页面再答）</a></li>
+</ul>
+</div>
+
+<h2 id="p0">Part 0：一句话定位</h2>
+
+<p>你已经掌握 MLA、MoE sigmoid routing、以及 DeepSeek-V3.2 的 <strong>DSA</strong>（lightning indexer 选 top-k token → sparse MLA）。GLM-5.2 在算法层面<strong>不是</strong>一个新范式，它 = <em>DeepSeek-V3.2 风格的 MLA + DSA</em>，外加三个增量：</p>
+
+<table>
+<tr><th>增量</th><th>是什么</th><th>本课重点</th></tr>
+<tr><td><strong>IndexShare</strong></td><td>DSA 的 index 不再每层重算，而是<mark>每 4 层算一次、中间 3 层复用</mark></td><td>★ 主角</td></tr>
+<tr><td>1M 原生 context</td><td>rope_theta=8M，非 YaRN/NTK 外推</td><td>顺带</td></tr>
+<tr><td>改进版 MTP</td><td>单 nextn 层，acceptance length +20%，且<mark>MTP 迭代复用同一份 index</mark></td><td>课 02 细讲</td></tr>
+</table>
+
+<div class="key-insight"><strong>定位锚点</strong>：DSA 解决"单层内 attention 是 O(n²)"——选 top-2048。IndexShare 解决"<strong>每层都要重新选一次 top-2048 也很贵</strong>"——既然相邻层选出来的 token 高度重合，那就别每层都选。一句话：<strong>DSA 压缩"算哪些 token"，IndexShare 压缩"多久选一次 token"。</strong></div>
+
+<p class="citation">架构标识：<code>model_type = glm_moe_dsa</code>，<code>architectures = ["GlmMoeDsaForCausalLM"]</code>。主读物 → arXiv:2603.12201 <em>IndexCache: Accelerating Sparse Attention via Cross-Layer Index Reuse</em>（本课所有 IndexShare claim 的一手来源）。</p>
+
+<h2 id="p1">Part 1：30 秒 forward pass 全景</h2>
+
+<p>单个 sparse 层（layer ≥3）的数据流。维度全部来自真实 FP8 权重（见<a href="../reference/architecture-cheatsheet.html">速查卡</a>），不是记忆。</p>
+
+<div class="mermaid">
+flowchart TD
+    X["hidden_states<br/>[T, 6144]"] --> WQA["wqa_wkv GEMM<br/>6144→2624<br/>(q_a 2048 + kv_a 512 + rope_k 64)"]
+    WQA --> QL["q_lora [T,2048]"]
+    WQA --> KVL["kv_latent [T,512]"]
+    WQA --> KR["rope_k [T,64]"]
+
+    QL --> QB["q_b: 2048→16384<br/>= 64 heads × 256"]
+    KVL --> KVB["kv_b_proj: 512→28672<br/>= 64 × (192 nope + 256 v)"]
+
+    QL -.q_lora 复用.-> IDX
+    X --> IDX["<b>DSA Indexer</b><br/>indexer_q_b 2048→4096 (32×128)<br/>indexer_wk 6144→128 (MQA)<br/>k_norm + RoPE + weights_proj"]
+    IDX --> LOGITS["fp8 MQA logits<br/>(deep_gemm)"]
+    LOGITS --> TOPK["topk_transform<br/><b>选 top-2048 key 位置</b>"]
+
+    QB --> SMLA["<b>SparseMLAOp</b><br/>head_num=64, head_dim=576<br/>只对 top-2048 做 attention"]
+    KVB --> SMLA
+    KR --> SMLA
+    TOPK -- "index (可被后续层复用)" --> SMLA
+    SMLA --> O["o_proj 16384→6144"]
+    O --> MOE["MoE: gate(256) → top-8<br/>+ 1 shared expert<br/>routed_scaling 2.5"]
+    MOE --> OUT["→ 残差 → 下一层"]
+</div>
+
+<div class="deep-dive"><strong>读图要点</strong>：①<code>q_lora</code> 同时喂给主路径 q_b 和 indexer，省一次投影。②indexer 是 <strong>MQA</strong>（wk 只输出 128 维单头 key），所以打分便宜。③<code>SparseMLAOp</code> 的 head_dim=576 = 512 latent + 64 rope，是 MLA 的 <em>absorbed</em> 形式（不展开成 64×256）。④<mark>红色的 index 这一步，就是 IndexShare 要"跨层省掉"的对象。</mark></div>
+
+<h2 id="p2">Part 2：IndexShare —— 本课主角</h2>
+
+<h3>2.1 机制：每 4 层算一次 index</h3>
+
+<p>DSA 每一层都要跑一遍 indexer：投影 → MQA logits → topk，为该层的 query 选出 top-2048 个 key。IndexShare 的观察是：<strong>相邻层选出来的 top-2048 集合高度重合</strong>，因为它们读的是同一条残差流、语义在层间平滑变化。既然重合，就没必要每层重选。</p>
+
+<p>config 用两个旋钮控制：<code>index_topk_freq = 4</code>（每 4 层重算一次）、<code>indexer_types</code> 标记每层是 <code>full</code>（重算）还是 <code>shared</code>（复用）。78 层的"重算层"落点是：</p>
+
+<pre>full indexer layers = [0, 1, 2,  6, 10, 14, 18, 22, 26, 30, 34, 38,
+                       42, 46, 50, 54, 58, 62, 66, 70, 74,  78(MTP)]</pre>
+
+<div class="mermaid">
+flowchart LR
+    subgraph G2["每 4 层一个周期 (layer 6→9)"]
+      L6["L6<br/>sparse_indexer<br/><b>重算 index</b>"]:::calc
+      L7["L7<br/>复用"]:::reuse
+      L8["L8<br/>复用"]:::reuse
+      L9["L9<br/>复用"]:::reuse
+      L6 -- "index 缓存" --> L7 --> L8 --> L9
+    end
+    L9 -.-> L10["L10<br/>重算..."]:::calc
+    classDef calc fill:#ffcdd2,stroke:#e53935,stroke-width:2px;
+    classDef reuse fill:#c8e6c9,stroke:#43a047;
+</div>
+
+<p>所以一个 4 层周期里，indexer 只跑 <strong>1 次</strong>而非 4 次 → indexer 部分省 ~4×。注意前缀 <code>layer 0,1,2</code> 是 dense MLP 层且<strong>每层都算 full index</strong>（浅层语义变化快，不敢复用），从 layer 3 才进入"周期复用"。</p>
+
+<h3>2.2 为什么安全：index 在层间变化缓慢</h3>
+
+<div class="key-insight"><strong>核心论证</strong>（arXiv:2603.12201）：把"第 L 层为某 query 选出的 top-2048 集合"记作 S<sub>L</sub>。实测 <code>|S<sub>L</sub> ∩ S<sub>L+1</sub>| / 2048</code> 接近 1——相邻层的选择几乎一样。用 S<sub>L</sub> 去近似 S<sub>L+1</sub>、S<sub>L+2</sub>、S<sub>L+3</sub> 的误差很小，而省下的是整整 3 层的 indexer 计算。这是一个<strong>用极小质量损失换大量计算</strong>的 Pareto 改进。</div>
+
+<p>关键区分：IndexShare <strong>复用的是"选哪些 token"（index），不是"attention 的输出"</strong>。每一层仍然用自己的 Q/K/V、自己的 SparseMLAOp 做完整 attention——只是<em>在哪些 token 上</em>做这件事，沿用了上游层的决定。所以表达能力几乎不受损：每层的 attention 权重仍是该层独立学出来的。</p>
+
+<h3>2.3 收益与 tradeoff</h3>
+
+<table>
+<tr><th>维度</th><th>结论</th></tr>
+<tr><td>FLOPs 节省</td><td>1M context 下 per-token <strong>2.9×</strong>（indexer 调用频率降到 1/4，且省去重复的 logits/topk）</td></tr>
+<tr><td>质量损失</td><td>近乎为零（相邻层 index 重合度高）</td></tr>
+<tr><td>freq 的选择</td><td>太大（如每 8 层）→ 远层语义漂移、index 失配掉点；太小（每 2 层）→ 省得少。<strong>4 是工程甜点</strong></td></tr>
+<tr><td>额外收益</td><td><code>index_share_for_mtp_iteration=true</code>：MTP draft 迭代直接复用 base 的 index，speculative decoding 不必为草稿 token 重选</td></tr>
+</table>
+
+<div class="warning"><strong>易错点</strong>：IndexShare ≠ KV cache 共享，也 ≠ attention 输出共享（那是 cross-layer attention / YOCO 那一类）。它只共享<strong>稀疏选择的 index 张量</strong>。KV cache 仍是 MLA 压缩的 per-layer latent；attention 仍 per-layer 计算。把这三者搞混是最常见的理解错误。</div>
+
+<h2 id="p3">Part 3：三方对比 —— 稀疏注意力的"层间"新轴</h2>
+
+<p>你在 minimax-m3 workspace 学过 NSA / DSA / MSA 的对比，那是<strong>"单层内"</strong>怎么选 token 的对比轴。IndexShare 引入了一条<strong>正交的新轴：跨层多久重选一次</strong>。把两条轴放一起：</p>
+
+<table>
+<tr><th>方法</th><th>单层内 indexer 粒度</th><th>跨层 index 频率</th><th>KV 形态</th></tr>
+<tr><td>DeepSeek-V3.2 <strong>DSA</strong></td><td>token-level，lightning indexer</td><td>每层重算</td><td>MLA 压缩 latent</td></tr>
+<tr><td>MiniMax-M3 <strong>MSA</strong></td><td>block-level，per-group selection</td><td>每层重算</td><td>full KV（稀疏计算）</td></tr>
+<tr><td><strong>GLM-5.2 IndexShare</strong></td><td>token-level（同 DSA）</td><td><mark>每 4 层重算</mark></td><td>MLA 压缩 latent</td></tr>
+</table>
+
+<div class="compare"><strong>关键洞察</strong>：IndexShare 不和 DSA/MSA 竞争"怎么选 token"——它<strong>站在 DSA 之上</strong>，正交地砍掉"选 token"这个动作本身的频率。理论上 IndexShare 这层复用思想也能叠加到 MSA 上（MSA 的 block selection 同样在相邻层重合）。这就是为什么把它理解成"DSA 的一个工程优化层"而非"新的 attention 算法"才准确。</div>
+
+<h4>与 DeepSeek-V3.2 的具体差异（一句话版）</h4>
+<p>同样的 MLA 维度家族（kv_lora=512、qk_rope=64）、同样的 lightning indexer（FP8 + deep_gemm MQA logits + topk_transform）、同样的 256/8/1 MoE——<strong>唯一的算法增量就是 indexer 的跨层复用</strong>，加上把 context 拉到 1M。这也解释了课 02 的核心结论：day-0 适配能大量复用 DeepSeek-V3.2 的代码路径。</p>
+
+<h2 id="p4">Part 4：检索练习</h2>
+<p class="citation">先合上上面的内容，凭记忆作答，再展开核对。这是 storage strength 的关键——effortful retrieval。</p>
+
+<div class="quiz">
+<details>
+<summary>Q1. IndexShare 在相邻层之间复用的，到底是哪一个张量？</summary>
+<p>复用的是 <strong>index</strong>（稀疏选择出的 top-2048 key 位置）。不是 KV cache，不是 attention 输出，不是 Q/K/V。每层仍用各自的权重做完整 SparseMLA attention，只是"在哪些 token 上做"沿用上游层。</p>
+</details>
+</div>
+
+<div class="quiz">
+<details>
+<summary>Q2. 为什么跨层复用 index 几乎不掉点？用一句话回答其依据。</summary>
+<p>因为<strong>相邻层为同一 query 选出的 top-2048 集合高度重合</strong>（残差流语义在层间平滑变化），用上游 index 近似下游层误差极小（arXiv:2603.12201 实测）。</p>
+</details>
+</div>
+
+<div class="quiz">
+<details>
+<summary>Q3. index_topk_freq=4 偏大或偏小分别会怎样？各一句。</summary>
+<p>偏大（如 8）：远层语义已漂移，复用的 index 失配，<strong>质量下降</strong>。偏小（如 2）：重选太频繁，<strong>省下的计算变少</strong>。4 是质量与计算的工程甜点。</p>
+</details>
+</div>
+
+<div class="quiz">
+<details>
+<summary>Q4. 用一句话区分 DSA 与 IndexShare 各自压缩了什么。</summary>
+<p>DSA 压缩"<strong>对哪些 token 算 attention</strong>"（每 query 选 top-2048）；IndexShare 压缩"<strong>多久重新选一次 token</strong>"（每 4 层选一次）。两条轴正交。</p>
+</details>
+</div>
+
+<div class="quiz">
+<details>
+<summary>Q5. GLM-5.2 相对 DeepSeek-V3.2，唯一的注意力算法增量是什么？</summary>
+<p>indexer 的<strong>跨层索引复用（IndexShare）</strong>。MLA 维度、lightning indexer、MoE 配置基本一致；其余差异是 1M context 与改进版 MTP。</p>
+</details>
+</div>
+
+<div class="deep-dive" style="margin-top:2em;">
+<strong>下一步</strong><br>
+① <strong>主读物</strong>：arXiv:2603.12201 <em>IndexCache</em>（IndexShare 一手来源），重点看 cross-layer index 重合度的实测曲线与 freq 消融。<br>
+② <strong>进入<a href="0002-sglang-day0-enablement.html">课 02</a></strong>：SGLang 怎么物理地把这套架构跑起来，以及 day-0 适配的真实代码改动点与 tricks。<br>
+③ <strong>有疑问随时问我</strong>——我是你的老师。比如"IndexShare 和 YOCO/cross-layer attention 到底差在哪""freq=4 是否对所有 context 长度都最优""draft 层复用 index 会不会放大 speculative 的错误"，都可以追问。
+</div>
+
+<div class="footer">课 01 / GLM-5.2-FP8 教学 · 事实源自真实 FP8 权重校验 + HF 模型卡 + arXiv:2603.12201 · 配套 <a href="../reference/architecture-cheatsheet.html">架构速查卡</a> 与 <a href="../reference/glossary.html">术语表</a></div>
+
+</body>
+</html>

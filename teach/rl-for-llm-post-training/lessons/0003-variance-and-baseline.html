@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 03 — 方差、Baseline 与 Advantage</title>
+<link rel="stylesheet" href="../assets/rl-course.css">
+<script src="../assets/quiz.js" defer></script>
+</head>
+<body>
+
+<p class="lesson-number">Lesson 03</p>
+<h1>方差、Baseline 与 Advantage</h1>
+<p class="subtitle">让 policy gradient 从「能用」变成「好用」</p>
+
+<!-- ====== SECTION 1 ====== -->
+<h2>1. 裸 Policy Gradient 的问题</h2>
+
+<p>上一课推出的公式：</p>
+
+<div class="math-block">
+∇<sub>θ</sub> J ≈ (1/N) Σ<sub>i</sub> R<sub>i</sub> · Σ<sub>t</sub> ∇<sub>θ</sub> log π<sub>θ</sub>(y<sub>i,t</sub> | ...)
+</div>
+
+<p>实际用起来有两个大问题：</p>
+
+<ol>
+<li><strong>方差极高</strong>：不同 rollout 的 R 差异很大，梯度估计忽左忽右</li>
+<li><strong>Credit assignment 粗糙</strong>：所有 token 乘同一个 R，好坏不分</li>
+</ol>
+
+<p>先用一个数字例子感受方差问题。</p>
+
+<!-- ====== SECTION 2 ====== -->
+<h2>2. 方差到底多大</h2>
+
+<p>假设对同一个 prompt，4 条 rollout 的 reward 是：</p>
+
+<pre><code>rollout 1: R = 10  (偶然做得特别好)
+rollout 2: R = 1
+rollout 3: R = 2
+rollout 4: R = 0</code></pre>
+
+<p>每条 rollout 对梯度的贡献正比于 R。rollout 1 的贡献是 rollout 3 的 5 倍。</p>
+
+<p>但 rollout 1 可能只是运气好，不一定代表正确方向。下一批 4 条可能完全不同：</p>
+
+<pre><code>rollout 5: R = 0
+rollout 6: R = 3
+rollout 7: R = 0
+rollout 8: R = 8</code></pre>
+
+<p>两批的平均梯度方向可能差很远。这就是高方差：<strong>估计不稳定，训练震荡</strong>。</p>
+
+<!-- ====== SECTION 3 ====== -->
+<h2>3. Baseline：一个简单但关键的技巧</h2>
+
+<p>核心想法：不要用绝对 reward，用<strong>相对 reward</strong>。</p>
+
+<div class="math-block">
+∇<sub>θ</sub> J = E [ (R(a) − b) · ∇<sub>θ</sub> log π<sub>θ</sub>(a) ]
+</div>
+
+<p>这里 b 是 <strong>baseline</strong> — 一个不依赖于当前动作的参考值。</p>
+
+<p>直觉：</p>
+
+<div class="key-insight">
+<p>不问「这个动作得了多少分」，而问「这个动作比平均水平好多少」。<br><br>
+得 5 分，但平均水平是 8 分 → 这其实是个差动作（5−8 = −3）<br>
+得 3 分，但平均水平是 1 分 → 这其实是个好动作（3−1 = +2）</p>
+</div>
+
+<h3>为什么减 baseline 不改变梯度方向？</h3>
+
+<p>数学证明只需三行：</p>
+
+<div class="derivation">
+<p class="step">E[ b · ∇log π(a) ] = b · Σ<sub>a</sub> π(a) · ∇log π(a)</p>
+<p class="step">= b · Σ<sub>a</sub> ∇π(a)</p>
+<p class="step">= b · ∇ Σ<sub>a</sub> π(a) = b · ∇(1) = 0</p>
+</div>
+
+<p>因为所有动作概率加起来恒等于 1，其梯度恒为零。所以减掉任何只依赖状态的常数 b，期望梯度不变。</p>
+
+<p><strong>但方差变了</strong>。选对 b 能大幅降低方差。</p>
+
+<!-- ====== SECTION 4 ====== -->
+<h2>4. Value Function：最自然的 Baseline</h2>
+
+<p>最好的 b 是什么？直觉上，b 应该是「在当前状态下，按正常策略能拿到的平均分」。这正是 <strong>Value Function</strong> 的定义：</p>
+
+<div class="math-block">
+V<sup>π</sup>(s) = E<sub>π</sub>[ 从状态 s 开始，一直执行到结束，能拿的总分 ]
+</div>
+
+<p>更正式地：</p>
+
+<div class="math-block">
+V<sup>π</sup>(s<sub>t</sub>) = E[ r<sub>t</sub> + γr<sub>t+1</sub> + γ²r<sub>t+2</sub> + ... | s<sub>t</sub> ]
+</div>
+
+<p>其中 γ 是折扣因子（0到1之间），让远期 reward 衰减。LLM 后训练通常 γ≈1。</p>
+
+<p>V(s) 的含义：<strong>你目前处于状态 s，按正常发挥的话，预计能拿多少分</strong>。</p>
+
+<!-- ====== SECTION 5 ====== -->
+<h2>5. Advantage：好多少 / 差多少</h2>
+
+<p>定义 Q 函数：</p>
+
+<div class="math-block">
+Q<sup>π</sup>(s, a) = E[ 在状态 s 选择动作 a 之后，能拿的总分 ]
+</div>
+
+<p>V 是平均水平，Q 是选了特定动作后的水平。两者之差就是 <strong>Advantage</strong>：</p>
+
+<div class="math-block" style="border: 2px solid var(--accent); background: #fff8f8;">
+A<sup>π</sup>(s, a) = Q<sup>π</sup>(s, a) − V<sup>π</sup>(s)
+</div>
+
+<p>含义极其清楚：</p>
+
+<table>
+<tr><th>Advantage 值</th><th>含义</th></tr>
+<tr><td>A > 0</td><td>这个动作比当前状态的平均表现好</td></tr>
+<tr><td>A = 0</td><td>这个动作和平均一样</td></tr>
+<tr><td>A < 0</td><td>这个动作比平均差</td></tr>
+</table>
+
+<p>用 advantage 替换原始 reward，policy gradient 变成：</p>
+
+<div class="math-block" style="border: 2px solid var(--accent); background: #fff8f8;">
+∇<sub>θ</sub> J = E [ Σ<sub>t</sub> A<sub>t</sub> · ∇<sub>θ</sub> log π<sub>θ</sub>(a<sub>t</sub> | s<sub>t</sub>) ]
+</div>
+
+<div class="key-insight">
+<p><strong>用 advantage 替换 reward 后：</strong><br>
+• 好于平均的动作 → 增大概率<br>
+• 差于平均的动作 → 减小概率<br>
+• 和平均一样的动作 → 不动<br><br>
+这比「得分高就加、得分低就不动」精确得多。</p>
+</div>
+
+<!-- ====== SECTION 6 ====== -->
+<h2>6. 一个具体例子</h2>
+
+<p>场景：模型在生成代码的第 50 个 token 处。</p>
+
+<pre><code>V(s₅₀) = 0.4      ← 在这个状态下，平均成功率 40%
+Q(s₅₀, 写 if 判断) = 0.7  ← 如果这里写 if 判断，成功率 70%
+Q(s₅₀, 直接 return) = 0.2 ← 如果这里直接 return，成功率 20%</code></pre>
+
+<p>Advantage：</p>
+<pre><code>A(写 if 判断) = 0.7 − 0.4 = +0.3  → 增大这个 token 的概率
+A(直接 return) = 0.2 − 0.4 = −0.2  → 减小这个 token 的概率</code></pre>
+
+<p>这解决了 credit assignment：不是所有 token 都乘同一个 R，而是每个 token 根据自己对成功的贡献获得不同的 advantage。</p>
+
+<!-- ====== SECTION 7 ====== -->
+<h2>7. Critic：谁来估计 V？</h2>
+
+<p>V(s) 是一个期望值，没法精确算。实际做法是训练另一个神经网络来<strong>预测</strong> V(s)。</p>
+
+<p>这个预测 V 的网络叫 <strong>Critic</strong>。整体架构叫 <strong>Actor-Critic</strong>：</p>
+
+<table>
+<tr><th>组件</th><th>是什么</th><th>做什么</th></tr>
+<tr><td>Actor</td><td>生成动作的 LLM（策略 π<sub>θ</sub>）</td><td>决定选什么 token</td></tr>
+<tr><td>Critic</td><td>预测 V(s) 的网络</td><td>估计当前状态能拿多少分</td></tr>
+</table>
+
+<p>注意：这里的 critic <strong>不是用自然语言评价答案</strong>，而是输出一个数字——当前状态的预估价值。</p>
+
+<p>Critic 怎么训练？用 TD (temporal-difference) error 或 Monte-Carlo return 做监督学习。细节在 PPO 那课会讲。</p>
+
+<!-- ====== SECTION 8 ====== -->
+<h2>8. 回顾：从裸 PG 到 Actor-Critic 的进化</h2>
+
+<table>
+<tr><th>版本</th><th>梯度公式中 R 的位置被替换为</th><th>效果</th></tr>
+<tr><td>REINFORCE</td><td>R(τ)（整条轨迹总 reward）</td><td>能用，方差极高</td></tr>
+<tr><td>+ reward-to-go</td><td>G<sub>t</sub>（从 t 之后的 reward）</td><td>稍好，去掉了过去的噪声</td></tr>
+<tr><td>+ baseline</td><td>G<sub>t</sub> − b</td><td>方差显著降低</td></tr>
+<tr><td>Actor-Critic</td><td>A<sub>t</sub> = Q(s,a) − V(s)</td><td>每个 token 独立评估</td></tr>
+</table>
+
+<p>PPO 和 GRPO 都建立在 advantage 之上，只是估计 advantage 的方式不同。</p>
+
+<!-- ====== QUIZ ====== -->
+<div class="quiz-container">
+<h3>检验理解 ✍️</h3>
+<p>模型在某个状态的 V(s) = 0.6。它选了一个动作后实际拿到的 return 是 0.9。这个动作的 advantage 估计值大约是多少？模型会怎么更新？</p>
+
+<div class="quiz-option" data-correct="true" data-explanation="正确。A ≈ 0.9 − 0.6 = 0.3 > 0，所以增大该动作的概率。">A ≈ +0.3，增大该动作的概率</div>
+<div class="quiz-option" data-correct="false" data-explanation="V(s)=0.6 是 baseline。reward 0.9 > baseline 0.6，所以 advantage 为正。">A ≈ −0.3，减小该动作的概率</div>
+<div class="quiz-option" data-correct="false" data-explanation="0.9 不是绝对差，advantage 是 return 减去 V(s) 这个 baseline。">A ≈ +0.9，因为 return 本身就是 advantage</div>
+<div class="quiz-option" data-correct="false" data-explanation="V 是 baseline，不是直接拿来当梯度的。advantage = return − V。">A ≈ +0.6，因为 V(s) 就是 advantage</div>
+
+<div class="quiz-feedback"></div>
+</div>
+
+<!-- ====== SECTION 9 ====== -->
+<h2>9. 本课小结</h2>
+
+<ol>
+<li><strong>裸 policy gradient 方差很大</strong>，训练不稳定</li>
+<li><strong>Baseline</strong>：从 reward 中减去一个参考值，不改变期望梯度，但降低方差</li>
+<li><strong>V(s)</strong> = 从状态 s 出发的平均得分 — 最自然的 baseline</li>
+<li><strong>Advantage A = Q − V</strong> = 这个动作比平均好多少</li>
+<li><strong>Critic</strong> = 估计 V(s) 的网络，和生成动作的 Actor 配合使用</li>
+</ol>
+
+<p>下一课：PPO 怎么在此基础上防止更新过猛。</p>
+
+<h2>推荐阅读</h2>
+<p><a href="https://spinningup.openai.com/en/latest/spinningup/rl_intro3.html">Spinning Up: Intro to Policy Optimization</a> §"Baselines in Policy Gradients" 和 §"Generalized Advantage Estimation" 是对本课内容的代码级展开。</p>
+
+<div class="ask-teacher">
+<strong>💬 有疑问？</strong> 「为什么减 baseline 不改变梯度」那个证明如果跳得太快，告诉我，我可以一步一步展开。V 和 Q 的区别也可以再举例。
+</div>
+
+<div class="nav-links">
+<a href="0002-multi-step-rollout.html">← 上一课：多步决策与 Rollout</a>
+<a href="0004-ppo.html">下一课：PPO →</a>
+</div>
+
+</body>
+</html>

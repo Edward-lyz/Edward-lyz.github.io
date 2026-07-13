@@ -1,0 +1,15 @@
+{
+  "title": "Python CPU 性能分析与优化实战",
+  "lessons": [
+    {
+      "title": "Lesson 01: Python CPU 性能分析与优化",
+      "path": "lessons/0001-cpu-profiling-and-optimization.html"
+    }
+  ],
+  "references": [
+    {
+      "title": "Python CPU Profiling 命令速查",
+      "path": "reference/profiling-commands.html"
+    }
+  ]
+}

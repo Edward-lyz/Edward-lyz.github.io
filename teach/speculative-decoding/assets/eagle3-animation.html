@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EAGLE3 TTT 动画演示</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: #1a1a2e;
+  color: #eee;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 1.5rem 1rem;
+}
+h1 { font-size: 1.3rem; margin-bottom: 0.3rem; }
+.subtitle { color: #8892b0; font-size: 0.8rem; margin-bottom: 1rem; }
+
+.stage {
+  width: 100%;
+  aspect-ratio: 2.2 / 1;
+  background: #0f0f23;
+  border-radius: 10px;
+  border: 1px solid #333;
+  position: relative;
+  overflow: hidden;
+}
+
+.token {
+  position: absolute;
+  padding: 0.35em 0.7em;
+  border-radius: 5px;
+  font-size: clamp(0.55rem, 1.2vw, 0.8rem);
+  font-weight: 600;
+  white-space: nowrap;
+  transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+  opacity: 0;
+  transform: scale(0.8);
+}
+.token.visible { opacity: 1; transform: scale(1); }
+.token.target { background: #16a34a; color: white; }
+.token.draft { background: #2563eb; color: white; }
+.token.kv { background: #7c3aed; color: white; }
+.token.loss { background: #dc2626; color: white; }
+.token.info { background: #475569; color: #94a3b8; }
+.token.embed { background: #d97706; color: white; }
+.token.output { background: #0891b2; color: white; }
+.token.bonus { background: #eab308; color: #1a1a2e; }
+
+.region {
+  position: absolute;
+  border-radius: 7px;
+  border: 1px solid;
+  transition: all 0.5s ease;
+  opacity: 0;
+}
+.region.visible { opacity: 1; }
+.region.collect { border-color: #16a34a; background: rgba(22,163,74,0.06); }
+.region.ttt { border-color: #2563eb; background: rgba(37,99,235,0.06); }
+.region.infer { border-color: #0891b2; background: rgba(8,145,178,0.06); }
+
+.region-label {
+  position: absolute;
+  font-size: clamp(0.5rem, 1vw, 0.65rem);
+  color: #8892b0;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.desc {
+  width: 100%;
+  margin-top: 0.8rem;
+  padding: 0.8rem 1rem;
+  background: #16213e;
+  border-radius: 8px;
+  min-height: 60px;
+  font-size: clamp(0.75rem, 1.4vw, 0.9rem);
+  line-height: 1.6;
+  color: #ccd6f6;
+}
+.desc strong { color: #64ffda; }
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  margin-top: 0.8rem;
+  width: 100%;
+}
+.controls button {
+  padding: 0.4rem 1.2rem;
+  border: 1px solid #64ffda;
+  background: transparent;
+  color: #64ffda;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  transition: all 0.2s;
+}
+.controls button:hover:not(:disabled) { background: #64ffda; color: #0f0f23; }
+.controls button:disabled { opacity: 0.3; cursor: not-allowed; }
+.controls .progress { color: #8892b0; font-size: 0.75rem; margin-left: auto; }
+</style>
+</head>
+<body>
+
+<h1>EAGLE3: Training-Time Test (TTT)</h1>
+<p class="subtitle">点击「下一步」推进算法流程</p>
+
+<div class="stage" id="stage"></div>
+<div class="desc" id="desc"></div>
+<div class="controls">
+  <button type="button" id="prevBtn">← 上一步</button>
+  <button type="button" id="nextBtn">下一步 →</button>
+  <span class="progress" id="progress"></span>
+  <button type="button" id="resetBtn" style="border-color:#8892b0; color:#8892b0;">重置</button>
+</div>
+
+<script>
+const stage = document.getElementById('stage');
+const desc = document.getElementById('desc');
+const prevBtn = document.getElementById('prevBtn');
+const nextBtn = document.getElementById('nextBtn');
+const resetBtn = document.getElementById('resetBtn');
+const progressEl = document.getElementById('progress');
+
+let currentStep = -1;
+const elements = {};
+
+function el(id, cls, text, x, y) {
+  const d = document.createElement('div');
+  d.className = 'token ' + cls;
+  d.textContent = text;
+  d.style.left = x + '%'; d.style.top = y + '%';
+  stage.appendChild(d);
+  elements[id] = d;
+}
+function region(id, cls, x, y, w, h, label) {
+  const d = document.createElement('div');
+  d.className = 'region ' + cls;
+  d.style.left = x + '%'; d.style.top = y + '%';
+  d.style.width = w + '%'; d.style.height = h + '%';
+  stage.appendChild(d);
+  elements[id] = d;
+  if (label) {
+    const lb = document.createElement('div');
+    lb.className = 'region-label';
+    lb.textContent = label;
+    lb.style.left = x + '%'; lb.style.top = (y - 5) + '%';
+    stage.appendChild(lb);
+  }
+}
+function show() { for (const id of arguments) { const e = elements[id]; if (e) e.classList.add('visible'); } }
+
+function buildScene() {
+  stage.innerHTML = '';
+  for (const k in elements) delete elements[k];
+
+  region('r-collect', 'collect', 2, 8, 30, 35, 'OFFLINE: TARGET DATA');
+  region('r-ttt', 'ttt', 2, 50, 62, 44, 'TTT TRAINING LOOP');
+  region('r-infer', 'infer', 67, 8, 31, 86, 'INFERENCE (= TTT FORWARD)');
+
+  // Offline collect
+  el('tm', 'target', 'Target Model', 5, 14);
+  el('hs', 'target', 'Hidden States (5层)', 5, 28);
+  el('pt', 'target', 'Logits → p_t (soft)', 18, 28);
+
+  // TTT step 0
+  el('fc', 'draft', 'fc: concat 5层 → d', 4, 55);
+  el('emb0', 'embed', 'Embed(x_shifted)', 30, 55);
+  el('dec0', 'draft', 'DraftDecoder (1层)', 4, 68);
+  el('kv0', 'kv', 'KV cache: [step 0]', 35, 68);
+  el('loss0', 'loss', 'L₀ = soft_CE(p_d, p_t) × λ⁰', 4, 82);
+
+  // TTT step 1
+  el('h1in', 'output', 'h⁽¹⁾ = 上步输出 (非真值!)', 4, 55);
+  el('emb1', 'embed', 'Embed(x_shifted²)', 38, 55);
+  el('kv1', 'kv', 'KV cache: [step 0, 1]', 35, 68);
+  el('loss1', 'loss', 'L₁ = soft_CE × λ¹=0.8', 4, 82);
+
+  // TTT full
+  el('s0', 'draft', 'Step 0 (λ⁰=1.0)', 4, 55);
+  el('s1', 'draft', 'Step 1 (λ¹=0.8)', 4, 64);
+  el('s2', 'draft', 'Step 2 (λ²=0.64)', 4, 73);
+  el('sdot', 'info', '...', 20, 80);
+  el('s6', 'draft', 'Step 6 (λ⁶=0.26)', 4, 86);
+  el('kvfull', 'kv', 'KV: 7 steps = 有效深度 7', 30, 86);
+  el('total', 'loss', 'L_total = Σ λˢ·Lₛ', 35, 55);
+
+  // Inference
+  el('i-fc', 'draft', 'fc(multi-layer)', 70, 14);
+  el('i-d0', 'output', 'Draft step 0', 70, 27);
+  el('i-d1', 'output', 'Draft step 1', 70, 38);
+  el('i-d2', 'output', '...', 70, 49);
+  el('i-d6', 'output', 'Draft step 6', 70, 60);
+  el('i-block', 'draft', 'x̂₁ x̂₂ x̂₃ x̂₄ x̂₅ x̂₆ x̂₇', 70, 73);
+  el('i-verify', 'target', '→ Target verify', 70, 86);
+  el('i-note', 'bonus', '推理 = TTT forward', 72, 5);
+}
+
+const steps = [
+  {
+    action() { show('r-collect', 'tm'); },
+    desc: '<strong>Step 1 — 离线收集</strong>：对训练数据跑一次 target model 前传，收集每个位置的多层 hidden states 和 output logits。一次性成本。'
+  },
+  {
+    action() { show('hs', 'pt'); },
+    desc: '<strong>Step 2 — 监督信号</strong>：提取 5 层 hidden states（层 1,9,17,25,33）和 output logits → softmax 得 <strong>soft label p_t</strong>。比 hard label 包含完整分布信息。'
+  },
+  {
+    action() { show('r-ttt', 'fc', 'emb0', 'dec0', 'kv0'); },
+    desc: '<strong>Step 3 — TTT Step 0</strong>：Multi-layer features concat → fc 压到 d 维。输入 embedding 左移一位。经 1 层 Draft Decoder → output h⁽¹⁾。KV cache 初始化。'
+  },
+  {
+    action() { show('loss0'); },
+    desc: '<strong>Step 4 — Step 0 Loss</strong>：output → LM Head → logits⁽⁰⁾。与 p_t (shifted) 计算 fused soft CE。权重 λ⁰=1.0。Triton kernel 避免 materialize [B,T,V] tensor。'
+  },
+  {
+    action() { hide('fc', 'emb0', 'dec0', 'kv0', 'loss0'); show('h1in', 'emb1', 'kv1', 'loss1'); },
+    desc: '<strong>Step 5 — TTT Step 1</strong>：<strong>关键</strong>：输入 = 上一步自己的 hidden output h⁽¹⁾（不是真实 feature）。和推理时完全一样！KV cache 含 step 0 → 能 attend to 历史。Loss 权重 λ¹=0.8。'
+  },
+  {
+    action() { hide('h1in', 'emb1', 'kv1', 'loss1'); show('s0', 's1', 's2', 'sdot', 's6', 'kvfull', 'total'); },
+    desc: '<strong>Step 6 — 完整 TTT (γ=7)</strong>：展开 7 步。每步输入=上步输出 + shifted embedding → Decoder（KV 累积）→ loss × λˢ。<strong>有效深度=7</strong>（KV cache 累积的 attention 等价 7 层）。总 loss 带衰减求和。'
+  },
+  {
+    action() { show('r-infer', 'i-fc', 'i-d0', 'i-d1', 'i-d2', 'i-d6', 'i-block'); },
+    desc: '<strong>Step 7 — 推理时</strong>：推理的 draft 过程 = TTT 训练中的 forward pass。每步用上一步输出 + KV cache。7 步串行后得 7 个 draft token。<strong>训练=推理，无 exposure bias</strong>。'
+  },
+  {
+    action() { show('i-verify', 'i-note'); },
+    desc: '<strong>Step 8 — 代价与收益</strong>：代价是 T_draft = 7×T_step（仍然串行）。收益是有效深度 7 + 分布对齐 → acceptance rate 显著提升。这就是 autoregressive drafter 的极致——要打破串行，需要 DFlash/DSpark。'
+  },
+];
+
+function applyStep(idx) {
+  buildScene();
+  for (let i = 0; i <= idx; i++) steps[i].action();
+  desc.innerHTML = steps[idx].desc;
+  progressEl.textContent = (idx + 1) + ' / ' + steps.length;
+  prevBtn.disabled = idx <= 0;
+  nextBtn.disabled = idx >= steps.length - 1;
+}
+function reset() {
+  currentStep = -1;
+  buildScene();
+  desc.innerHTML = '点击「下一步」开始动画演示。';
+  progressEl.textContent = '0 / ' + steps.length;
+  prevBtn.disabled = true;
+  nextBtn.disabled = false;
+}
+
+nextBtn.addEventListener('click', () => { if (currentStep < steps.length - 1) { currentStep++; applyStep(currentStep); } });
+prevBtn.addEventListener('click', () => { if (currentStep > 0) { currentStep--; applyStep(currentStep); } });
+resetBtn.addEventListener('click', reset);
+reset();
+</script>
+</body>
+</html>

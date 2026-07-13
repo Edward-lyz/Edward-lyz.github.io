@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第五课：两级 KV 索引</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script defer src="../assets/quiz.js"></script>
+</head>
+<body>
+<h1>两级 KV 索引</h1>
+<p class="outcome">学完本课，你能估算 per-rank KV tensor 量级，从 request 的逻辑 position 查到 physical slot，并解释为什么 request row 与 KV slot 必须分别分配。</p>
+
+<h2>先确定课程讨论的是哪一层优化</h2>
+
+<table>
+<thead><tr><th>层次</th><th>典型手段</th><th>是否改变模型/KV语义</th></tr></thead>
+<tbody>
+<tr><td>Token level</td><td>选择、稀疏、量化、低秩、merge</td><td>常需 accuracy 证明</td></tr>
+<tr><td>Model level</td><td>MQA/GQA/MLA、跨层共享、线性注意力</td><td>由架构或训练决定</td></tr>
+<tr><td>System level</td><td>paging、prefix reuse、tiering、调度、PD</td><td>核心路径可做无损管理</td></tr>
+</tbody>
+</table>
+
+<p>本课程主线是 system-level ownership：不删除 token，也不改变 attention 数学结果，而是决定 KV 存在哪里、由谁引用、何时迁移或回收。Sparse attention 与 KV compression 可以叠加，但必须另做等价性或 accuracy 验证，不能和 allocator 优化混为一谈。<span class="source-note">分类背景：<a href="https://arxiv.org/abs/2404.14294">A Survey on Efficient Inference for Large Language Models</a>；具体 SGLang ownership 仍以固定 tag 源码为准。</span></p>
+
+<h2>先用公式估算物理量级</h2>
+
+<p>标准 MHA/GQA 的每-rank KV bytes 可写成：</p>
+<pre><code>M_rank = layers × T_local × bytes_per_element
+         × (local_k_heads × k_head_dim + local_v_heads × v_head_dim)</code></pre>
+<p><code>T_local</code> 是该 rank 实际拥有的 request tokens 总数；DPA 会改变它，TP/attention TP 会改变 local heads。公式还没包含 padded page、预留 slot、allocator metadata、HiCache host copy 或 speculative tail，所以它是 lower-level tensor 估算，不是 <code>nvidia-smi</code> 的完整预测。</p>
+<p>举一个量级校验：64 层、batch 4、sequence 32,768、总 KV dim 1,024、BF16 时，逻辑未分片 KV 为 <code>2 × 64 × 4 × 32768 × 1024 × 2 bytes = 32 GiB</code>。部署时再把总 KV dim 换成本 rank pool 的真实 heads/dims。这个算式能在读 allocator 前先暴露并发与上下文长度的线性压力。</p>
+
+<h2>页表与物理内存是两个资源池</h2>
+<pre><code>ReqToTokenPool.req_to_token[req_pool_idx, logical_position]
+                                │
+                                └── physical_kv_slot
+                                      │
+                                      ├── K[layer][slot, local_kv_head, head_dim]
+                                      └── V[layer][slot, local_kv_head, v_head_dim]</code></pre>
+<p><code>ReqToTokenPool</code> 是二维映射表，而不是 KV tensor。本行代表一个活跃 request，本列代表 sequence 内的逻辑位置，值才是实际 KV slot。<code>TokenToKVPoolAllocator</code> 管理这些 physical slots；<code>MHATokenToKVPool</code> 保存每层真正的 K/V buffers。</p>
+<p class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/mem_cache/memory_pool.py#L242-L320">memory_pool.py:242-320</a>、<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/mem_cache/allocator/token.py#L28-L82">allocator/token.py:28-82</a> 与 <a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/mem_cache/memory_pool.py#L1291-L1535">memory_pool.py:1291-1535</a>。</p>
+
+<h2>一个具体映射</h2>
+<table>
+<thead><tr><th>逻辑位置</th><th>token</th><th>页表值</th><th>physical KV</th></tr></thead>
+<tbody>
+<tr><td>0</td><td>101</td><td>73</td><td>所有层的 slot 73</td></tr>
+<tr><td>1</td><td>205</td><td>74</td><td>所有层的 slot 74</td></tr>
+<tr><td>2</td><td>991</td><td>410</td><td>所有层的 slot 410</td></tr>
+<tr><td>3</td><td>17</td><td>411</td><td>所有层的 slot 411</td></tr>
+</tbody>
+</table>
+<p>逻辑 sequence 连续，不要求 physical slots 连续。前两个 slots 可能来自 Radix prefix，后两个来自本轮 allocator。Attention backend 通过 request row 和 sequence metadata gather 正确位置。</p>
+
+<h2>为什么 row 0 与 slot 0 都保留</h2>
+<p><code>ReqToTokenPool</code> 实际分配 <code>size + 1</code> 行，free rows 从 1 开始；CUDA Graph padded batch 的 dummy request index 默认写到 row 0。标准 token allocator 同样把 slot 0 保留给 padded token 的 dummy output。Paged allocator 则保留一个 padded page。它们是两个不同层面的哨兵，不应当合并理解。</p>
+<div class="invariant"><strong>两个 allocator 的失败含义不同</strong>request row 用尽通常意味着并发 request 上限过高；physical KV slot 用尽意味着 token footprint 过高。二者需要不同参数与诊断。</div>
+
+<h2>Page size 改变分配粒度，不改变抽象</h2>
+<p><code>page_size=1</code> 时 allocator 逐 token slot 分配。<code>page_size&gt;1</code> 时 <code>PagedTokenToKVPoolAllocator</code> 管理 pages，并返回 page 内展开后的 token indices。request row 仍然保存每个逻辑 token 对应的 physical index，因此上层 lookup contract 不变，但 prefix match、eviction 与 reservation 都必须 page aligned。<span class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/mem_cache/allocator/paged.py#L105-L250">allocator/paged.py:105-250</a>。</span></p>
+
+<h2>最小自检</h2>
+<div class="quiz" data-answer="1">
+<h3><code>req_to_token[7, 2] == 410</code> 的准确含义是什么？</h3>
+<label><input type="radio" name="q5" value="1">请求七的位置二映射物理槽四一零</label>
+<label><input type="radio" name="q5" value="2">请求二的位置七映射物理槽四一零</label>
+<label><input type="radio" name="q5" value="3">物理层七的位置二保存令牌四一零</label>
+<label><input type="radio" name="q5" value="4">缓存页七的位置二拥有请求四一零</label>
+<div class="feedback correct" aria-live="polite">正确。row 7 是 request slot，column 2 是逻辑 sequence position，410 是 physical KV slot。</div>
+<div class="feedback incorrect" aria-live="polite">不对。索引左边是 request row 与逻辑 token position，表中存储的值才是 physical KV slot。</div>
+</div>
+<div class="quiz" data-answer="4">
+<h3>模型、dtype 与 local heads 不变，仅本 rank 拥有的 tokens 翻倍，K/V tensor 下界怎样变化？</h3>
+<label><input type="radio" name="q5b" value="1">保持不变</label>
+<label><input type="radio" name="q5b" value="2">增加一半</label>
+<label><input type="radio" name="q5b" value="3">增长四倍</label>
+<label><input type="radio" name="q5b" value="4">增长两倍</label>
+<div class="feedback correct" aria-live="polite">正确。KV bytes 对 local token count 线性增长；page padding 等实际开销可能让短区间略有偏差。</div>
+<div class="feedback incorrect" aria-live="polite">不对。固定 layers、dtype、heads 和 dims 后，公式中只有 local tokens 翻倍，所以 tensor bytes 翻倍。</div>
+</div>
+
+</body>
+</html>

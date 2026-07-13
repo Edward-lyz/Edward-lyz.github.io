@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 04 — PPO: 防止更新过猛</title>
+<link rel="stylesheet" href="../assets/rl-course.css">
+<script src="../assets/quiz.js" defer></script>
+</head>
+<body>
+
+<p class="lesson-number">Lesson 04</p>
+<h1>PPO：防止更新过猛</h1>
+<p class="subtitle">Proximal Policy Optimization 的核心思想和公式</p>
+
+<!-- ====== SECTION 1 ====== -->
+<h2>1. 普通 Policy Gradient 的致命问题</h2>
+
+<p>到目前为止的公式是：</p>
+
+<div class="math-block">
+∇<sub>θ</sub> J = E [ A<sub>t</sub> · ∇<sub>θ</sub> log π<sub>θ</sub>(a<sub>t</sub> | s<sub>t</sub>) ]
+</div>
+
+<p>问题是：<strong>一次更新可能把策略改得面目全非</strong>。</p>
+
+<p>想象你是一个学生。考了一次试，数学题做对了，语文题做错了。合理反应是「数学再接再厉，语文多练习」。但如果反应过度：「以后只做数学不做语文」——这就过猛了。</p>
+
+<p>在 RL 中，一次大更新的后果：</p>
+
+<ol>
+<li>策略突然变化 → 之前采集的 rollout 不再代表新策略</li>
+<li>下一轮 rollout 可能在完全不同的区域 → 训练不稳定</li>
+<li>可能陷入局部最优或直接崩溃</li>
+</ol>
+
+<div class="key-insight">
+<p><strong>PPO 的核心思想：每次更新不要离旧策略太远。</strong><br><br>
+用一个 clip 操作限制新旧策略的差距，保证稳定性。</p>
+</div>
+
+<!-- ====== SECTION 2 ====== -->
+<h2>2. Probability Ratio: 衡量新旧差距</h2>
+
+<p>假设 rollout 是用旧策略 π<sub>old</sub> 采集的。现在要优化新策略 π<sub>θ</sub>。</p>
+
+<p>定义 <strong>probability ratio</strong>：</p>
+
+<div class="math-block">
+ρ<sub>t</sub>(θ) = π<sub>θ</sub>(a<sub>t</sub> | s<sub>t</sub>) / π<sub>old</sub>(a<sub>t</sub> | s<sub>t</sub>)
+</div>
+
+<p>含义：</p>
+
+<table>
+<tr><th>ρ 的值</th><th>含义</th></tr>
+<tr><td>ρ = 1</td><td>新旧策略对这个动作的概率相同（没变化）</td></tr>
+<tr><td>ρ > 1</td><td>新策略更喜欢这个动作（概率变大了）</td></tr>
+<tr><td>ρ < 1</td><td>新策略更不喜欢这个动作（概率变小了）</td></tr>
+</table>
+
+<p>如果不做任何限制，用 ratio 形式写 policy gradient：</p>
+
+<div class="math-block">
+J<sub>CPI</sub> = E [ ρ<sub>t</sub> · A<sub>t</sub> ]
+</div>
+
+<p>这叫 conservative policy iteration 目标。如果 ρ 无限增大，一个高 advantage 的动作会被过度强化。</p>
+
+<!-- ====== SECTION 3 ====== -->
+<h2>3. PPO 的 Clipped Objective</h2>
+
+<p>PPO 的做法：限制 ρ 的范围，不让它偏离 1 太远。</p>
+
+<div class="math-block" style="border: 2px solid var(--accent); background: #fff8f8;">
+J<sub>PPO</sub> = E [ min( ρ<sub>t</sub> · A<sub>t</sub> , clip(ρ<sub>t</sub>, 1−ε, 1+ε) · A<sub>t</sub> ) ]
+</div>
+
+<p>其中 ε 通常取 0.1 或 0.2。clip 函数的意思是：</p>
+
+<div class="math-block">
+clip(ρ, 1−ε, 1+ε) = max(1−ε, min(ρ, 1+ε))
+</div>
+
+<p>把 ρ 强制限制在 [1−ε, 1+ε] 范围内。</p>
+
+<!-- ====== SECTION 4 ====== -->
+<h2>4. 分四种情况理解 clip</h2>
+
+<p>设 ε = 0.2，所以 ρ 被限制在 [0.8, 1.2]。</p>
+
+<h3>情况 1：A > 0 且 ρ < 1.2（好动作，变化不大）</h3>
+<pre><code>ρ = 1.1, A = +2
+min(1.1 × 2, clip(1.1) × 2) = min(2.2, 2.2) = 2.2
+→ 正常优化，继续增大该动作概率</code></pre>
+
+<h3>情况 2：A > 0 且 ρ > 1.2（好动作，但变化太大）</h3>
+<pre><code>ρ = 1.5, A = +2
+min(1.5 × 2, clip(1.5→1.2) × 2) = min(3.0, 2.4) = 2.4
+→ 梯度被截断！不让你继续猛推了</code></pre>
+
+<h3>情况 3：A < 0 且 ρ > 0.8（差动作，变化不大）</h3>
+<pre><code>ρ = 0.9, A = −2
+min(0.9 × (−2), clip(0.9) × (−2)) = min(−1.8, −1.8) = −1.8
+→ 正常优化，继续减小该动作概率</code></pre>
+
+<h3>情况 4：A < 0 且 ρ < 0.8（差动作，但已经减太多了）</h3>
+<pre><code>ρ = 0.5, A = −2
+min(0.5 × (−2), clip(0.5→0.8) × (−2)) = min(−1.0, −1.6) = −1.6
+→ 梯度被截断！不让你继续猛减了</code></pre>
+
+<div class="key-insight">
+<p><strong>总结 PPO clip 的效果：</strong><br><br>
+• 好动作：可以增大概率，但不许一次增太多<br>
+• 差动作：可以减小概率，但不许一次减太多<br>
+• 约束范围由 ε 控制，ε 越小约束越紧</p>
+</div>
+
+<!-- ====== SECTION 5 ====== -->
+<h2>5. PPO 的完整训练循环</h2>
+
+<pre><code>for 每一轮:
+    1. 用当前策略 π_old 生成一批 rollout
+    2. 计算每条 rollout 的 reward
+    3. 用 Critic 估计 V(s)，算出 advantage A
+    4. 用 PPO clipped objective 更新 Actor（多个 mini-batch epoch）
+    5. 用实际 return 更新 Critic
+    6. 把更新后的 Actor 作为新的 π_old
+    7. 回到步骤 1</code></pre>
+
+<p>注意步骤 1：<strong>每一轮都要重新生成 rollout</strong>。因为 PPO 是 on-policy 算法，旧策略的 rollout 在策略更新后就过时了。</p>
+
+<p>步骤 4 中「多个 epoch」是 PPO 的一个效率技巧：同一批 rollout 可以用几个 epoch，只要 ρ 没偏离太远（这正是 clip 保证的）。</p>
+
+<!-- ====== SECTION 6 ====== -->
+<h2>6. PPO 中 Critic 的训练</h2>
+
+<p>Critic 的任务：预测 V(s) 尽可能接近真实 return G<sub>t</sub>。</p>
+
+<div class="math-block">
+L<sub>critic</sub> = (1/N) Σ ( V<sub>φ</sub>(s<sub>t</sub>) − G<sub>t</sub> )²
+</div>
+
+<p>这就是一个普通的 MSE 回归问题。Critic 看到状态（已有文本），输出一个数字（预估得分），和实际 return 算 L2 loss。</p>
+
+<p>在 LLM 后训练中，Critic 通常和 Actor 共享大部分参数（同一个 transformer），加一个输出 head 来预测 value。</p>
+
+<!-- ====== SECTION 7 ====== -->
+<h2>7. 为什么 PPO 在 LLM 后训练中如此流行</h2>
+
+<table>
+<tr><th>PPO 的优点</th><th>对 LLM 训练的意义</th></tr>
+<tr><td>更新步幅受控</td><td>LLM 训练代价极高，一次崩溃损失巨大</td></tr>
+<tr><td>可复用 rollout 几个 epoch</td><td>rollout 生成慢（LLM 推理），复用提高效率</td></tr>
+<tr><td>实现相对简单</td><td>工程可维护</td></tr>
+<tr><td>token-level advantage</td><td>能对长序列中的每个 token 精细评估</td></tr>
+</table>
+
+<p>ChatGPT、Claude 等模型的 RLHF 阶段都使用 PPO 或其变体。</p>
+
+<!-- ====== SECTION 8 ====== -->
+<h2>8. PPO 的代价：需要 Critic</h2>
+
+<p>PPO 需要训练和维护一个 Critic 网络。对于大型 LLM：</p>
+
+<ul>
+<li>Critic 本身可能和 Actor 一样大</li>
+<li>额外的显存和计算开销</li>
+<li>Critic 训练不好 → advantage 估计不准 → Actor 训练受损</li>
+</ul>
+
+<p>这正是下一课 GRPO 要解决的问题：<strong>能不能不要 Critic？</strong></p>
+
+<!-- ====== QUIZ ====== -->
+<div class="quiz-container">
+<h3>检验理解 ✍️</h3>
+<p>ε=0.2。某个动作的 advantage A=+3（好动作）。新策略对它的概率是旧策略的 1.5 倍（ρ=1.5）。PPO 会怎么处理？</p>
+
+<div class="quiz-option" data-correct="false" data-explanation="ρ=1.5 超过了 1+ε=1.2 的上界，clip 会生效。">正常用 ρ×A = 4.5 作为 objective，因为 A>0 就该大力推</div>
+<div class="quiz-option" data-correct="true" data-explanation="正确。clip(1.5, 0.8, 1.2)=1.2，所以 objective = min(1.5×3, 1.2×3) = min(4.5, 3.6) = 3.6。梯度被限制了。">clip 生效，objective 被截为 1.2×3=3.6，阻止继续增大概率</div>
+<div class="quiz-option" data-correct="false" data-explanation="PPO 不会把更新降为零，只是限制幅度。">完全阻止更新，objective 变为零，因为偏离太远</div>
+<div class="quiz-option" data-correct="false" data-explanation="clip 限制的是 ρ 的范围，不是直接砍掉 advantage。">将 A 从 3 砍到 ε=0.2，然后正常计算</div>
+
+<div class="quiz-feedback"></div>
+</div>
+
+<!-- ====== SECTION 9 ====== -->
+<h2>9. 本课小结</h2>
+
+<ol>
+<li><strong>普通 PG 可能一次更新过猛</strong>，导致训练不稳定</li>
+<li><strong>ρ = π<sub>new</sub>/π<sub>old</sub></strong> 衡量新旧策略差距</li>
+<li><strong>PPO clip</strong>：限制 ρ 在 [1−ε, 1+ε]，防止单次更新过大</li>
+<li><strong>PPO 训练循环</strong>：生成 rollout → 算 advantage → clip 更新 → 重复</li>
+<li><strong>需要 Critic</strong> 来估计 V(s)，这是额外的成本</li>
+</ol>
+
+<p>下一课：GRPO 如何用一组 rollout 的组内对比替代 Critic。</p>
+
+<h2>推荐阅读</h2>
+<p><a href="https://arxiv.org/abs/1707.06347">PPO 原始论文 (Schulman et al. 2017)</a>：只需读 Section 3 (Clipped Surrogate Objective)，这 2 页就是 PPO 的全部核心。</p>
+
+<div class="ask-teacher">
+<strong>💬 有疑问？</strong> clip 的四种情况如果还不直觉，告诉我，我可以画一个 ρ-A 平面的图来展示哪些区域被截断。
+</div>
+
+<div class="nav-links">
+<a href="0003-variance-and-baseline.html">← 上一课：方差与 Baseline</a>
+<a href="0005-grpo.html">下一课：GRPO →</a>
+</div>
+
+</body>
+</html>

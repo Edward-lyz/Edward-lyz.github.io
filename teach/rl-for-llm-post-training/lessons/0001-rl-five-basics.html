@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 01 — RL 的五个基本概念</title>
+<link rel="stylesheet" href="../assets/rl-course.css">
+<script src="../assets/quiz.js" defer></script>
+</head>
+<body>
+
+<p class="lesson-number">Lesson 01</p>
+<h1>RL 的五个基本概念</h1>
+<p class="subtitle">从一步选择题到 policy gradient 的直觉</p>
+
+<!-- ====== SECTION 1 ====== -->
+<h2>1. 从一个你已经懂的东西开始</h2>
+
+<p>你训练过神经网络。训练的核心循环是：</p>
+
+<pre><code>预测 → 计算 loss → 求梯度 → 更新参数</code></pre>
+
+<p>监督学习（包括 SFT）的 loss 很直接：模型输出和标准答案的差距。</p>
+
+<p>RL 的核心问题是：<strong>如果没有标准答案，只有一个「结果好不好」的分数，怎么训练？</strong></p>
+
+<div class="key-insight">
+<p>监督学习：老师给你标准答案，你照着学。<br>
+强化学习：没有标准答案，你自己试，试完告诉你得了几分。</p>
+</div>
+
+<!-- ====== SECTION 2 ====== -->
+<h2>2. 五个基本概念</h2>
+
+<p>RL 的所有东西都建立在五个概念上。先用一个具体场景理解它们：</p>
+
+<p><strong>场景</strong>：你面前有一道选择题，四个选项 A/B/C/D。你选一个，然后系统告诉你对不对。</p>
+
+<table class="vocab-table">
+<tr><th>概念</th><th>英文</th><th>在这个场景里是什么</th></tr>
+<tr><td>状态</td><td>State (s)</td><td>题目本身 — 你看到的信息</td></tr>
+<tr><td>动作</td><td>Action (a)</td><td>你选的那个选项</td></tr>
+<tr><td>策略</td><td>Policy (π)</td><td>你选各个选项的概率分布</td></tr>
+<tr><td>奖励</td><td>Reward (r)</td><td>选对得 1 分，选错得 0 分</td></tr>
+<tr><td>参数</td><td>θ</td><td>决定你策略的东西（神经网络权重）</td></tr>
+</table>
+
+<p>策略是核心。它不是一个固定答案，而是一个<strong>概率分布</strong>：</p>
+
+<div class="math-block">
+π<sub>θ</sub>(a | s) = 在状态 s 下，选择动作 a 的概率
+</div>
+
+<p>比如你对这道题的策略可能是：</p>
+
+<pre><code>π(A) = 0.1,  π(B) = 0.6,  π(C) = 0.2,  π(D) = 0.1</code></pre>
+
+<p>你最可能选 B，但不是百分百选 B。</p>
+
+<div class="key-insight">
+<p><strong>RL 的目标：调整参数 θ，使得策略 π<sub>θ</sub> 能拿到更高的平均分。</strong></p>
+</div>
+
+<!-- ====== SECTION 3 ====== -->
+<h2>3. 期望奖励 — RL 的 loss 函数</h2>
+
+<p>监督学习最小化 loss。RL 最大化「期望奖励」：</p>
+
+<div class="math-block">
+J(θ) = Σ<sub>a</sub> π<sub>θ</sub>(a) · R(a)
+</div>
+
+<p>翻译：把每个动作的概率乘以它的奖励，全部加起来。</p>
+
+<p><strong>用具体数字</strong>：假设正确答案是 B。</p>
+
+<pre><code>J(θ) = π(A)·0 + π(B)·1 + π(C)·0 + π(D)·0
+     = 0.1·0  + 0.6·1  + 0.2·0  + 0.1·0
+     = 0.6</code></pre>
+
+<p>J(θ) = 0.6 意味着你做这道题的平均得分是 0.6 分。</p>
+
+<p>要提高平均分，就要提高 π(B) — 增大正确动作的概率。</p>
+
+<!-- ====== SECTION 4 ====== -->
+<h2>4. 问题来了：你不知道哪个是对的</h2>
+
+<p>上面的计算假设你知道 R(A)=0, R(B)=1, R(C)=0, R(D)=0。</p>
+
+<p>但 RL 的设定是：<strong>你不知道每个动作的 reward，只有试了才知道。</strong></p>
+
+<p>所以你只能：</p>
+
+<ol>
+<li>按照当前策略 π<sub>θ</sub> 采样一个动作（比如选了 C）</li>
+<li>观察 reward（得了 0 分）</li>
+<li>用这个信息更新策略</li>
+</ol>
+
+<p>这就是 RL 和监督学习的根本区别。监督学习一次看到所有标准答案；RL 每次只看到自己选的那个动作的结果。</p>
+
+<div class="analogy">
+<p><strong>类比</strong>：监督学习像开卷考试（答案全给你），RL 像闭卷考试后只告诉你总分。</p>
+</div>
+
+<!-- ====== SECTION 5 ====== -->
+<h2>5. 核心公式：Policy Gradient</h2>
+
+<p>现在推导 RL 怎么求梯度。这是整个课程最重要的一个公式，后面所有东西（PPO、GRPO）都是它的变种。</p>
+
+<h3>第一步：写出目标</h3>
+
+<div class="math-block">
+J(θ) = Σ<sub>a</sub> π<sub>θ</sub>(a) · R(a)
+</div>
+
+<h3>第二步：对 θ 求导</h3>
+
+<div class="math-block">
+∇<sub>θ</sub> J = Σ<sub>a</sub> R(a) · ∇<sub>θ</sub> π<sub>θ</sub>(a)
+</div>
+
+<p>到这里还没法算，因为 ∇<sub>θ</sub>π<sub>θ</sub>(a) 不方便直接处理。</p>
+
+<h3>第三步：log-derivative trick</h3>
+
+<p>这是一个数学恒等式。对任意函数 f(x)：</p>
+
+<div class="math-block">
+∇ log f(x) = ∇f(x) / f(x)
+</div>
+
+<p>移项得到：</p>
+
+<div class="math-block">
+∇f(x) = f(x) · ∇ log f(x)
+</div>
+
+<p>把 f 换成 π<sub>θ</sub>(a)：</p>
+
+<div class="math-block">
+∇<sub>θ</sub> π<sub>θ</sub>(a) = π<sub>θ</sub>(a) · ∇<sub>θ</sub> log π<sub>θ</sub>(a)
+</div>
+
+<h3>第四步：代回去</h3>
+
+<div class="math-block">
+∇<sub>θ</sub> J = Σ<sub>a</sub> R(a) · π<sub>θ</sub>(a) · ∇<sub>θ</sub> log π<sub>θ</sub>(a)
+</div>
+
+<p>注意 Σ<sub>a</sub> π<sub>θ</sub>(a) · [某个东西] 就是按策略采样的期望。所以：</p>
+
+<div class="math-block" style="border: 2px solid var(--accent); background: #fff8f8;">
+∇<sub>θ</sub> J = E<sub>a~π<sub>θ</sub></sub> [ R(a) · ∇<sub>θ</sub> log π<sub>θ</sub>(a) ]
+</div>
+
+<p>这就是 <strong>Policy Gradient</strong> 定理的核心。</p>
+
+<!-- ====== SECTION 6 ====== -->
+<h2>6. 这个公式到底在说什么</h2>
+
+<div class="key-insight">
+<p>从当前策略里采样一个动作 → 观察 reward → 用 reward 乘以该动作 log 概率的梯度来更新参数。</p>
+</div>
+
+<p>逐词解释：</p>
+
+<table>
+<tr><th>符号</th><th>含义</th><th>实际操作</th></tr>
+<tr><td>E<sub>a~π</sub></td><td>从策略中采样</td><td>让模型实际做一次选择</td></tr>
+<tr><td>R(a)</td><td>这次选择的得分</td><td>观察结果</td></tr>
+<tr><td>∇<sub>θ</sub> log π<sub>θ</sub>(a)</td><td>让这个动作概率变化的方向</td><td>反向传播</td></tr>
+</table>
+
+<p>整体效果：</p>
+
+<ul>
+<li>R(a) > 0 → 沿梯度方向走 → <strong>增大</strong>这个动作的概率</li>
+<li>R(a) < 0 → 反方向走 → <strong>减小</strong>这个动作的概率</li>
+<li>R(a) = 0 → 不动</li>
+</ul>
+
+<p><strong>直觉</strong>：试了一个动作，得分高，就让以后更可能选它；得分低，就让以后更少选它。</p>
+
+<!-- ====== SECTION 7 ====== -->
+<h2>7. 一个数字例子走一遍</h2>
+
+<p>场景：二选一，A 对（reward=1），B 错（reward=0）。</p>
+
+<p>当前策略：π(A) = 0.3, π(B) = 0.7。模型更偏向选错的 B。</p>
+
+<p><strong>情况一：采样到了 A</strong></p>
+<pre><code>R(A) = 1
+梯度方向 = 1 · ∇log π(A) → 提高 π(A)
+下一轮 π(A) 变大，比如变成 0.4</code></pre>
+
+<p><strong>情况二：采样到了 B</strong></p>
+<pre><code>R(B) = 0
+梯度方向 = 0 · ∇log π(B) = 0 → 啥也不更新</code></pre>
+
+<p>问题来了：因为 π(B)=0.7，所以 70% 的时间会采到 B，梯度为零。只有 30% 的时间采到 A 时才有正信号。</p>
+
+<p><strong>这就是为什么 RL 训练比 SFT 慢得多</strong> — 你必须碰巧选到好动作才能学到东西。</p>
+
+<!-- ====== SECTION 8 ====== -->
+<h2>8. 和你已知的 SFT 对比</h2>
+
+<table>
+<tr><th></th><th>SFT</th><th>RL (Policy Gradient)</th></tr>
+<tr><td>信号来源</td><td>标准答案（每个 token）</td><td>最终得分（只有一个数字）</td></tr>
+<tr><td>梯度公式</td><td>∇ log π(a<sup>标准</sup>)</td><td>R(a) · ∇ log π(a<sup>采样</sup>)</td></tr>
+<tr><td>需要采样吗</td><td>不需要</td><td>必须采样才有梯度</td></tr>
+<tr><td>信号密度</td><td>每个 token 都有</td><td>只有采到好动作时有</td></tr>
+<tr><td>训练效率</td><td>高</td><td>低（需要大量采样）</td></tr>
+</table>
+
+<div class="key-insight">
+<p>SFT 的梯度是 ∇ log π(正确答案) — 不管模型当前怎么想，都直接告诉它正确答案是什么。<br><br>
+Policy Gradient 的梯度是 R · ∇ log π(采样结果) — 模型必须自己碰到好结果，才知道往哪走。</p>
+</div>
+
+<!-- ====== QUIZ ====== -->
+<div class="quiz-container">
+<h3>检验理解 ✍️</h3>
+<p>模型当前策略是 π(A)=0.9, π(B)=0.1。正确答案是 B（reward=1）, A 是错的（reward=0）。
+使用 policy gradient 训练，大多数情况下梯度更新会怎样？</p>
+
+<div class="quiz-option" data-correct="false" data-explanation="A 的 reward 是 0，梯度为零，不会增大 A 的概率。">多数时候增大 π(A)，因为采样到 A 的次数更多</div>
+<div class="quiz-option" data-correct="true" data-explanation="正确。90% 时间采到 A 但 reward=0 所以梯度为零；10% 时间采到 B 有正梯度。所以多数更新步什么都不发生。">多数时候梯度为零，偶尔才有正更新推高 π(B)</div>
+<div class="quiz-option" data-correct="false" data-explanation="Policy gradient 不知道没采到的动作的 reward，不会主动降低 A。">稳定降低 π(A) 同时升高 π(B)，因为模型知道 A 错了</div>
+<div class="quiz-option" data-correct="false" data-explanation="不需要枚举所有动作，policy gradient 基于采样。">无法学习，因为必须同时知道所有动作的 reward</div>
+
+<div class="quiz-feedback"></div>
+</div>
+
+<!-- ====== SECTION 9 ====== -->
+<h2>9. 本课小结</h2>
+
+<p>你现在知道了：</p>
+
+<ol>
+<li><strong>State, Action, Policy, Reward, θ</strong> — RL 的五个基本概念</li>
+<li><strong>J(θ) = E[R]</strong> — RL 最大化期望奖励</li>
+<li><strong>Policy Gradient = E[ R · ∇log π ]</strong> — 从采样中估计梯度的方法</li>
+<li><strong>RL 比 SFT 慢</strong>，因为必须碰巧采到好动作才有信号</li>
+</ol>
+
+<p>下一课会讲：当动作不只是一步选择，而是一串 token 时，公式怎么扩展。这正是 LLM 的情况。</p>
+
+<!-- ====== PRIMARY SOURCE ====== -->
+<h2>推荐阅读</h2>
+
+<p>OpenAI 的 <a href="https://spinningup.openai.com/en/latest/spinningup/rl_intro3.html">Spinning Up: Intro to Policy Optimization</a> 用代码和公式并行讲解 policy gradient，适合有深度学习基础但 RL 为零的人。先读到 "Implementing the Simplest Policy Gradient" 即可。</p>
+
+<!-- ====== ASK TEACHER ====== -->
+<div class="ask-teacher">
+<strong>💬 有疑问？</strong> 任何公式或概念不清楚的地方，直接问我。特别是 log-derivative trick 那步如果没跟上，我可以用更多例子解释。
+</div>
+
+<div class="nav-links">
+<span></span>
+<a href="0002-multi-step-rollout.html">下一课：多步决策与 Rollout →</a>
+</div>
+
+</body>
+</html>

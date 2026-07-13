@@ -1,0 +1,91 @@
+/* ===========================================================================
+   pi 内部课系列 · 共享样式表
+   第一个可复用 component（teach skill 推荐：每节 lesson 都 link 它，
+   保证整套课程视觉统一，而不是一堆各自为政的单页）。
+   视觉语言沿用 subagent-design-philosophy / pi-dynamic-workflows 两课。
+   =========================================================================== */
+
+:root {
+  --text: #1a1a1a;
+  --bg: #fefefe;
+  --accent: #2563eb;
+  --muted: #6b7280;
+  --border: #e5e7eb;
+  --code-bg: #f3f4f6;
+  --highlight: #fef3c7;
+  --success: #dcfce7;
+  --danger: #fef2f2;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: 'Crimson Pro', 'Source Han Serif CN', Georgia, serif;
+  color: var(--text);
+  background: var(--bg);
+  max-width: 780px;
+  margin: 0 auto;
+  padding: 2rem 1.5rem;
+  line-height: 1.75;
+  font-size: 17px;
+}
+
+h1 { font-size: 1.8rem; margin-bottom: 0.3rem; letter-spacing: -0.02em; }
+h2 { font-size: 1.35rem; margin-top: 2.8rem; margin-bottom: 0.8rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+h3 { font-size: 1.1rem; margin-top: 1.8rem; margin-bottom: 0.5rem; }
+p { margin-bottom: 1rem; }
+
+.subtitle { color: var(--muted); font-size: 0.95rem; margin-bottom: 2rem; }
+
+.formula-box {
+  background: var(--code-bg);
+  border-left: 3px solid var(--accent);
+  padding: 1rem 1.2rem;
+  margin: 1.2rem 0;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 0.85rem;
+  line-height: 1.8;
+  overflow-x: auto;
+  white-space: pre-wrap;
+}
+
+.key-insight { background: var(--highlight); border-radius: 4px; padding: 0.8rem 1rem; margin: 1rem 0; }
+.danger-box { background: var(--danger); border-left: 3px solid #ef4444; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 4px; }
+.success-box { background: var(--success); border-left: 3px solid #22c55e; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 4px; }
+
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 0.9rem; }
+th, td { border: 1px solid var(--border); padding: 0.5rem 0.7rem; text-align: left; vertical-align: top; }
+th { background: var(--code-bg); font-weight: 600; }
+
+code { font-family: 'JetBrains Mono', monospace; font-size: 0.83em; background: var(--code-bg); padding: 0.15em 0.4em; border-radius: 3px; }
+pre { background: var(--code-bg); padding: 1rem 1.2rem; margin: 1rem 0; border-radius: 6px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.82rem; line-height: 1.6; }
+pre code { background: none; padding: 0; }
+
+.flow-diagram { background: var(--code-bg); padding: 1.2rem; border-radius: 8px; margin: 1.2rem 0; font-family: 'JetBrains Mono', monospace; font-size: 0.82rem; line-height: 1.8; white-space: pre; overflow-x: auto; }
+
+.toc { background: var(--code-bg); padding: 1rem 1.5rem; border-radius: 6px; margin: 1.5rem 0; }
+.toc ul { list-style: none; padding-left: 0; }
+.toc li { margin: 0.3rem 0; }
+.toc a { color: var(--accent); text-decoration: none; }
+.toc a:hover { text-decoration: underline; }
+
+.layer-card { border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.2rem; margin: 0.8rem 0; }
+.layer-card .layer-name { font-weight: 700; color: var(--accent); font-family: monospace; }
+.layer-card .layer-file { font-size: 0.8rem; color: var(--muted); font-family: monospace; }
+
+/* 测验 widget：点击选项即时反馈（retrieval practice 的反馈回路）。
+   所有 lesson 共用同一套 .quiz 结构 + handleQuiz()。 */
+.quiz { background: #f0f4ff; border: 1px solid #c7d7f9; border-radius: 8px; padding: 1.2rem; margin: 2rem 0; }
+.quiz h3 { color: var(--accent); margin-bottom: 0.8rem; font-size: 1rem; margin-top: 0; }
+.quiz-q { margin-bottom: 0.8rem; font-weight: 600; }
+.quiz-options { list-style: none; padding: 0; }
+.quiz-options li { margin: 0.4rem 0; cursor: pointer; padding: 0.4rem 0.6rem; border-radius: 4px; border: 1px solid var(--border); background: white; }
+.quiz-options li:hover { background: var(--highlight); }
+.quiz-options li.correct { background: var(--success); border-color: #22c55e; }
+.quiz-options li.wrong { background: var(--danger); border-color: #ef4444; }
+.quiz-explain { display: none; margin-top: 0.8rem; font-size: 0.9rem; color: var(--muted); }
+.quiz-explain.show { display: block; }
+
+.nav { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--border); font-size: 0.9rem; color: var(--muted); }
+.nav a { color: var(--accent); text-decoration: none; }
+.nav a:hover { text-decoration: underline; }

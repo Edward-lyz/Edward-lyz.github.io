@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第十四课：端到端配置推导与实验矩阵</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script defer src="../assets/quiz.js"></script>
+</head>
+<body>
+<h1>端到端配置推导与实验矩阵</h1>
+<p class="outcome">学完本课，你能把 TTFT、ITL 与 throughput 放进同一 request timeline，为两类模型写出 ownership 假设，并设计单因子 benchmark。</p>
+
+<h2>先写 ownership worksheet，再写命令</h2>
+<table>
+<thead><tr><th>问题</th><th>Dense baseline</th><th>MoE + DPA + EP</th></tr></thead>
+<tbody>
+<tr><td>模型</td><td><code>Qwen3-14B</code></td><td><code>DeepSeek-V4-Flash</code></td></tr>
+<tr><td>物理 ranks</td><td><code>tp=8</code></td><td><code>tp=8</code></td></tr>
+<tr><td>Request/KV owner</td><td>8-way attention TP group</td><td>1 个 DPA rank</td></tr>
+<tr><td>Attention group</td><td><code>attn_tp=8</code></td><td><code>attn_tp=1, dp=8</code></td></tr>
+<tr><td>MLP/MoE group</td><td>8-way TP MLP</td><td>8-way EP/TP world</td></tr>
+<tr><td>关键通信</td><td>TP collectives</td><td>DPA gather + DeepEP A2A</td></tr>
+</tbody>
+</table>
+<p>这两列是实验起点，不是未经测量的最优配置。Qwen 也支持 DPA，但 dense baseline 先减少变量；DeepSeek MoE 才引入 DPA、EP 与 DeepEP。</p>
+
+<h2>固定 tag 的启动模板</h2>
+<pre><code># Dense control
+python -m sglang.launch_server   --model-path /models/Qwen3-14B   --tp 8
+
+# MoE ownership experiment
+python -m sglang.launch_server   --model-path /models/DeepSeek-V4-Flash   --tp 8   --dp-size 8   --ep 8   --enable-dp-attention   --moe-a2a-backend deepep   --deepep-mode auto</code></pre>
+<p>第二条命令是源码学习模板。实际启动前必须用该模型的 config 和 v0.5.15 backend compatibility 验证 quantization、runner 与自定义架构要求，不能自动切换一个语义不同的 backend。官方稳定组合可从 <a href="https://github.com/sgl-project/sglang/blob/v0.5.15/docs/advanced_features/dp_dpa_smg_guide.md#dpa-with-expert-parallelism-for-moe">DPA guide</a> 与 <a href="https://github.com/sgl-project/sglang/blob/v0.5.15/docs/advanced_features/expert_parallelism.md#examples">EP examples</a> 开始核对。</p>
+
+<h2>先把性能指标写成时间线</h2>
+
+<pre><code>request arrival
+  ├─ queue + tokenize + prefill ───────────────┤ first token
+  │                    TTFT                    │
+  └─ first token ─ ITL₁ ─ token₂ ─ ITL₂ ─ ... ─ final token
+
+E2E latency = TTFT + Σ ITL
+steady approximation = TTFT + (N_output - 1) × mean_ITL</code></pre>
+
+<p>TTFT 主要暴露 queue、prefix reuse、prefill、HiCache/PD transfer；ITL/TPOT 主要暴露 decode batch、KV bandwidth、DPA/DeepEP collective 与 retraction。Output tok/s 是系统吞吐，不说明单请求 tail。三者必须放在同一 trace 上解释，否则提高 batch size 得到的 throughput 增益可能只是把延迟转嫁给用户。</p>
+
+<h2>四组 tracer-bullet 实验</h2>
+<table>
+<thead><tr><th>实验</th><th>只改变</th><th>固定</th><th>主要观测</th></tr></thead>
+<tbody>
+<tr><td>Scheduler</td><td><code>chunked_prefill_size</code></td><td>trace、seed、并发、输出长</td><td>TTFT、ITL、prefill/decode batch</td></tr>
+<tr><td>KV reuse</td><td>共享 prefix 比例</td><td>总输入 token 与到达率</td><td>cache hit、prefill tokens、吞吐</td></tr>
+<tr><td>Memory pressure</td><td><code>max_running_requests</code></td><td>prompt/output 分布</td><td>retractions、p99 ITL、free/evictable</td></tr>
+<tr><td>DeepEP</td><td><code>auto</code> 对固定 mode</td><td>模型、TP/DP/EP、trace</td><td>A2A 时间、decode latency、吞吐</td></tr>
+</tbody>
+</table>
+<p>每组先 warmup，再至少记录相同时间窗的三次独立运行。平均吞吐不能替代 tail latency；cache hit 不能替代有效 compute 节省；GPU utilization 不能解释 queueing。必要指标至少包括 TTFT p50/p99、ITL p50/p99、output tok/s、retracted requests 与 prefix hit tokens。</p>
+
+<h2>源码与实验如何闭环</h2>
+<ol>
+<li>源码先给出可证伪预测，例如 chunk 变小会增加 prefill rounds，但可能改善 decode interleaving。</li>
+<li>设计唯一变量，确保 admission、模型、到达 trace 不同时变化。</li>
+<li>从 Scheduler 日志或 profiler 识别 batch mode 与 token counts。</li>
+<li>若结果反向，先检查是否触发 retraction、page alignment、DeepEP mode switch 或 rank imbalance。</li>
+<li>只有机制和端到端指标同时支持，才接受结论。</li>
+</ol>
+<div class="invariant"><strong>Benchmark 不是配置搜索</strong>一次改十个 flags 即使更快，也无法建立因果模型。课程目标是能解释为什么，而不是找到一个偶然最高值。</div>
+
+<h2>最小自检</h2>
+<div class="quiz" data-answer="3">
+<h3>要验证 chunk size 对 ITL 的因果影响，哪种实验最有效？</h3>
+<label><input type="radio" name="q14" value="1">同时改变模型与 chunk</label>
+<label><input type="radio" name="q14" value="2">同时改变并发与 chunk</label>
+<label><input type="radio" name="q14" value="3">固定 trace 只改变 chunk</label>
+<label><input type="radio" name="q14" value="4">随机流量只看吞吐</label>
+<div class="feedback correct" aria-live="polite">正确。固定请求 trace、seed、并发和输出分布，只改变 chunk size，才能把 ITL 差异归因到 chunking。</div>
+<div class="feedback incorrect" aria-live="polite">不对。同时改变其他变量无法区分 queueing、memory pressure 与 chunking。应固定 trace，只改变 chunk size。</div>
+</div>
+<div class="quiz" data-answer="3">
+<h3>TTFT 为 100 ms，输出 5 tokens，平均 ITL 为 20 ms。近似 E2E latency 是多少？</h3>
+<label><input type="radio" name="q14b" value="1">一百二十 ms</label>
+<label><input type="radio" name="q14b" value="2">一百六十 ms</label>
+<label><input type="radio" name="q14b" value="3">一百八十 ms</label>
+<label><input type="radio" name="q14b" value="4">二百毫秒</label>
+<div class="feedback correct" aria-live="polite">正确。首 token 已包含在 TTFT 中，后面有 4 个 token intervals，所以 <code>100 + 4 × 20 = 180 ms</code>。</div>
+<div class="feedback incorrect" aria-live="polite">不对。5 个输出 tokens 之间只有 4 个 ITL；E2E 近似为 <code>TTFT + (N−1)×ITL</code>。</div>
+</div>
+
+</body>
+</html>

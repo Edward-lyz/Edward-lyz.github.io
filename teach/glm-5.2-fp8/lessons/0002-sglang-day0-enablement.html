@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>课 02: SGLang 物理实现 —— GLM-5.2 如何"零新文件"Day-0 跑起来</title>
+<style>
+  body { font-family: 'Palatino Linotype', 'Book Antiqua', Palatino, serif; max-width: 980px; margin: 2em auto; padding: 0 1.5em; color: #2a2a2a; line-height: 1.8; }
+  h1 { font-size: 1.7em; border-bottom: 2px solid #222; padding-bottom: 0.3em; }
+  h2 { font-size: 1.34em; margin-top: 2.4em; color: #1a1a1a; border-left: 4px solid #6a1b9a; padding-left: 0.6em; }
+  h3 { font-size: 1.12em; margin-top: 1.7em; color: #444; }
+  h4 { font-size: 1.0em; margin-top: 1.2em; font-style: italic; color: #555; }
+  .mermaid { background: #fafafa; border: 1px solid #ddd; border-radius: 4px; padding: 1em; margin: 1.5em 0; overflow-x: auto; text-align: center; }
+  table { border-collapse: collapse; margin: 1em 0; width: 100%; }
+  th, td { border: 1px solid #ccc; padding: 0.45em 0.8em; text-align: left; font-size: 0.88em; vertical-align: top; }
+  th { background: #f3e5f5; }
+  .key-insight { background: #fffde7; border-left: 4px solid #f9a825; padding: 0.8em 1.1em; margin: 1.2em 0; }
+  .deep-dive { background: #e8f5e9; border-left: 4px solid #43a047; padding: 0.8em 1.1em; margin: 1.2em 0; }
+  .warning { background: #fce4ec; border-left: 4px solid #e53935; padding: 0.8em 1.1em; margin: 1.2em 0; }
+  .compare { background: #e3f2fd; border-left: 4px solid #1e88e5; padding: 0.8em 1.1em; margin: 1.2em 0; }
+  .trick { background: #fff3e0; border-left: 4px solid #fb8c00; padding: 0.8em 1.1em; margin: 1.2em 0; }
+  .citation { font-size: 0.85em; color: #666; }
+  code { background: #f0f0f0; padding: 0.15em 0.4em; border-radius: 3px; font-size: 0.85em; font-family: 'SF Mono', Menlo, monospace; }
+  pre { background: #f8f8f8; padding: 1em; border-radius: 4px; overflow-x: auto; font-size: 0.83em; line-height: 1.5; }
+  .file { color: #6a1b9a; font-family: 'SF Mono', Menlo, monospace; font-size: 0.82em; }
+  .footer { margin-top: 3em; padding-top: 1em; border-top: 1px solid #ddd; font-size: 0.9em; color: #666; }
+  .nav { font-size: 0.85em; color: #888; margin-bottom: 2em; }
+  .toc { background: #f9f9f9; border: 1px solid #eee; padding: 0.8em 1.5em; margin: 1.5em 0; }
+  .toc ul { margin: 0.3em 0; padding-left: 1.5em; }
+  .quiz { background: #f3e5f5; border: 1px solid #ce93d8; border-radius: 4px; padding: 1em; margin: 1.3em 0; }
+  .quiz summary { cursor: pointer; font-weight: bold; }
+  mark { background: #fff176; padding: 0 0.2em; }
+  .gap { color: #c62828; font-weight: bold; }
+  .ok { color: #2e7d32; font-weight: bold; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+</head>
+<body>
+<div class="nav"><a href="0001-glm52-architecture-indexshare.html">课 01：架构与 IndexShare</a> · 课 02 · <a href="../reference/sglang-day0-checklist.html">Day-0 拆解卡</a> · <a href="../reference/glossary.html">术语表</a></div>
+
+<h1>SGLang 物理实现<br><small style="font-size:0.58em;color:#777;">GLM-5.2 如何"零新文件"Day-0 跑起来 —— 社区上游的真实机制与 tricks</small></h1>
+
+<div class="toc">
+<strong>目录</strong>
+<ul>
+<li><a href="#p0">Part 0：重要前提 —— 上游已经做完了，我们学"它怎么做的"</a></li>
+<li><a href="#p1">Part 1：物理链路 —— 能力探测 (is_deepseek_dsa) 而非架构硬分支</a></li>
+<li><a href="#p2">Part 2：3 行模型类 + HF config 修补 trick</a></li>
+<li><a href="#p3">Part 3：IndexShare 在代码里长什么样（本课核心）</a></li>
+<li><a href="#p4">Part 4：MTP 跨迭代复用 —— 第二条复用通道</a></li>
+<li><a href="#p5">Part 5："有什么 tricks?" —— 汇总 + 可复用的 day-0 套路</a></li>
+<li><a href="#p6">Part 6：检索练习</a></li>
+</ul>
+</div>
+
+<p class="citation">代码基准：社区上游 <span class="file">PUBLIC_REPO/sglang</span>，commit <code>b8a73bfba0</code>（2026-06-16）。所有 file:line 经实际读取核对。与百度 <code>aiak_sglang</code> fork 的对比：fork 里 <code>GlmMoeDsa</code> / <code>index_share</code> 全部零匹配——<strong>day-0 的活，上游已经合入了</strong>，本课就拆这份真实实现。</p>
+
+<h2 id="p0">Part 0：重要前提 —— 上游已经做完了</h2>
+
+<p>你最初的问题是"GLM-5.2 怎么 day-0 支持？有什么 tricks？"。在社区上游 SGLang 里，答案不是一份"待办清单"，而是一份<strong>已合入的真实实现</strong>——而且它优雅到值得当成 case study：<mark>支持一个全新 frontier 模型，几乎没有写新代码。</mark></p>
+
+<table>
+<tr><th>你以为要做的</th><th>上游实际的做法</th></tr>
+<tr><td>写一个 <code>glm_moe_dsa.py</code> 模型文件</td><td><span class="ok">3 行子类</span>塞进 <code>glm4_moe.py</code> 末尾</td></tr>
+<tr><td>实现 MLA + DSA + indexer</td><td><span class="ok">全部继承</span> <code>DeepseekV2ForCausalLM</code></td></tr>
+<tr><td>给新架构加一堆 <code>if glm: ...</code> 分支</td><td><span class="ok">零架构分支</span>——靠<strong>能力探测</strong> <code>is_deepseek_dsa()</code></td></tr>
+<tr><td>从零写 IndexShare</td><td><span class="ok">已在 DeepSeek DSA 通用代码里</span>，GLM 只是开了 <code>index_topk_freq</code></td></tr>
+</table>
+
+<div class="key-insight"><strong>本课的总纲</strong>：SGLang 接 GLM-5.2 用的是一种"<strong>能力驱动（capability-driven）</strong>"而非"<strong>身份驱动（identity-driven）</strong>"的设计。框架不问"你是不是 GLM"，而问"你的 config 里有没有 <code>index_topk</code>"——有就走 DSA 稀疏路径。所以一个新模型只要<em>声明能力</em>（config 字段对、架构名进几个白名单 set），就自动复用整条 DSA 流水线。这就是 day-0 能"零新文件"的根本原因，也是你能从这份实现里偷走的最大架构智慧。</div>
+
+<p class="citation">对照：百度 <code>aiak_sglang</code> fork 在我第一次检索时 <code>GlmMoeDsa</code>/<code>index_share</code> 全零匹配——说明 fork 落后于上游。要让 fork 支持 GLM-5.2，最佳路径不是手写，而是把上游这套 cherry-pick 回来。本课拆的就是"要 pick 什么"。</p>
+
+<h2 id="p1">Part 1：物理链路 —— 能力探测，而非架构硬分支</h2>
+
+<p>先把"模型怎么被找到、怎么被认成 DSA 模型"的链路走一遍。关键节点都标了 file:line。</p>
+
+<div class="mermaid">
+flowchart TD
+    A["launch_server → ModelRunner.load_model()"] --> B["resolve_model_cls(architectures[0])<br/>查 EntryClass 表"]
+    B -- "'GlmMoeDsaForCausalLM'" --> C["命中 glm4_moe.py:1486<br/>EntryClass=[Glm4Moe.., GlmMoeDsa..]"]
+    C --> D["实例化 GlmMoeDsaForCausalLM<br/>(3 行子类, 继承 DeepseekV2ForCausalLM)"]
+    A2["HF config 加载<br/>config.py:70-88"] -.修补缺失字段.-> D
+    D --> E{"DeepseekV2 内部:<br/><b>is_deepseek_dsa(config)?</b><br/>model_config.py:103"}
+    E -- "arch 在 set 且 index_topk 存在<br/>→ True" --> F["use_dsa=True<br/>实例化 Indexer 模块"]
+    G["server_args.py:1991-2016<br/>is_deepseek_dsa → True"] --> H["attention_backend='dsa'<br/>(nsa 是 dsa 的废弃别名)"]
+    classDef hot fill:#fff3e0,stroke:#fb8c00;
+    class E,F hot;
+</div>
+
+<h3>1.1 关键开关：is_deepseek_dsa() 检查的是"能力"</h3>
+<p>整套 DSA 行为不是被"架构名 == GLM"打开的，而是被一个能力探测函数打开的：</p>
+<pre>configs/model_config.py:103
+def is_deepseek_dsa(config) -> bool:
+    return (
+        _hf_arch(config) in (
+            "DeepseekV3ForCausalLM", "DeepseekV32ForCausalLM",
+            "DeepseekV3ForCausalLMNextN", "MistralLarge3ForCausalLM",
+            "PixtralForConditionalGeneration",
+            "GlmMoeDsaForCausalLM",          # ← GLM 只是名单里多一行
+        )
+        and _hf_attr(config, "index_topk") is not None   # ← 真正的能力判据
+    )</pre>
+<div class="key-insight"><strong>读这段的正确姿势</strong>：架构名白名单是"允许进门"，<code>index_topk is not None</code> 才是"是不是 DSA"的实质判据。一个模型只要 config 里有 <code>index_topk</code> 且名字进了这个 set，就自动获得：Indexer 模块实例化、<code>use_dsa=True</code>、<code>dsa</code> 后端、稀疏注意力——<strong>全是 DeepSeek-V3.2 已经写好的通用代码</strong>。GLM 的"接入"本质上就是往这个 set 加一个字符串。</div>
+
+<h3>1.2 后端：nsa 已被 dsa 取代</h3>
+<p>注意一个上游近期的重命名（对照你在 minimax workspace 学的"nsa backend"，名字变了）：</p>
+<pre>layers/attention/attention_registry.py:109
+@register_attention_backend("dsa")
+def create_dsa_backend(runner):
+    return DeepseekSparseAttnBackend(runner)
+
+@register_attention_backend("nsa")          # 旧名
+def _create_nsa_compat(runner):
+    warnings.warn("attention-backend='nsa' is deprecated; use 'dsa' instead.")
+    return create_dsa_backend(runner)        # 直接转发到 dsa</pre>
+<p><code>server_args.py:1991-2016</code> 在 <code>is_deepseek_dsa()</code> 为真时自动设 <code>attention_backend="dsa"</code>，并把 <code>SGLANG_DSA_PREFILL_DENSE_ATTN_KV_LEN_THRESHOLD</code> 设成 <code>index_topk</code>。所以用户启动 GLM-5.2 时<strong>什么 attention flag 都不用加</strong>。</p>
+
+<h2 id="p2">Part 2：3 行模型类 + HF config 修补 trick</h2>
+
+<h3>2.1 整个模型类只有 3 行</h3>
+<pre>models/glm4_moe.py:1481
+class GlmMoeDsaForCausalLM(DeepseekV2ForCausalLM):
+    def determine_num_fused_shared_experts(self):
+        super().determine_num_fused_shared_experts("GlmMoeDsaForCausalLM")
+
+EntryClass = [Glm4MoeForCausalLM, GlmMoeDsaForCausalLM]   # 1486</pre>
+
+<p>它继承 <code>DeepseekV2ForCausalLM</code>，<strong>不覆盖任何 forward</strong>——MLA、Indexer、SparseMLA、MoE、权重加载全部白嫖。唯一覆盖的 <code>determine_num_fused_shared_experts</code> 是为了把自己的架构名传进 DeepSeek 那个"shared expert 融合"的硬检查里（<code>deepseek_v2.py</code> 检查 <code>architectures[0] != architecture or n_routed_experts != 256 or n_shared_experts != 1</code>）。GLM-5.2 是 256/1，数值过关，<mark>融合保持开启</mark>。</p>
+
+<div class="trick"><strong>Trick A：用"显式传名"绕过架构硬检查。</strong> 框架里残留的 <code>architectures[0] == "DeepseekV3..."</code> 这类身份判断，不去改它的 list，而是子类<strong>把自己的名字当参数传进去</strong>让检查通过。这是把"身份驱动"的旧代码温和地适配到新模型的标准手法。</div>
+
+<h3>2.2 HF config 修补：一个真实的兼容性 trick</h3>
+<p>这是最容易被忽略、却必须做的一步。HF transformers 的 <code>GlmMoeDsaConfig</code> 类在解析时会<strong>丢掉</strong> DSA 路径需要的字段，SGLang 只能从原始 config.json 重新读回来：</p>
+<pre>utils/hf_transformers/config.py:70
+if config.architectures[0] == "GlmMoeDsaForCausalLM":
+    # GlmMoeDsaConfig drops/clobbers raw checkpoint fields the DSA path
+    # needs, so re-read them from config.json and restore.
+    raw_config, _ = PretrainedConfig.get_config_dict(model, revision=revision)
+    for key in ("qk_rope_head_dim", "index_topk_freq"):
+        if key in raw_config:
+            setattr(config, key, raw_config[key])
+    if hasattr(config, "qk_head_dim") and hasattr(config, "qk_nope_head_dim"):
+        config.qk_head_dim = config.qk_nope_head_dim + config.qk_rope_head_dim</pre>
+<div class="warning"><strong>为什么这是 day-0 的隐形地雷</strong>：被丢掉的两个字段恰恰是命脉——<code>qk_rope_head_dim</code>（MLA 的 rope 维度，错了 attention 直接崩）和 <code>index_topk_freq</code>（<mark>IndexShare 的周期，丢了就退化成每层重算、白白损失 2.9×</mark>）。注释里还写明这是 transformers 的 bug（已由 HF PR #46338 上游修复），等 SGLang 依赖 transformers≥5.10 就能删掉这段。<strong>教训：day-0 适配里，"HF config 解析层的字段丢失"和"模型 forward 写错"一样致命，但前者更隐蔽。</strong></div>
+
+<h2 id="p3">Part 3：IndexShare 在代码里长什么样（本课核心）</h2>
+
+<p>课 01 讲了 IndexShare 的算法："每 4 层重算一次 index，中间复用"。现在看它在 SGLang 里<strong>物理上怎么实现</strong>。一句话剧透：<mark>没有任何全局 cache 对象——共享的 index 就是一个张量，沿着层循环用函数参数一层层往下传。</mark></p>
+
+<h3>3.1 每层在 __init__ 时算好两个布尔：skip_topk / next_skip_topk</h3>
+<pre>deepseek_v2.py:1604  (index_topk_freq 默认模式)
+self.skip_topk      = max(layer_id - 1, 0) % self.index_topk_freq != 0
+self.next_skip_topk = layer_id % self.index_topk_freq != 0
+
+# 或 offset 模式 (1617): 让"重算层"对齐到 checkpoint 实际带权重的层
+self.skip_topk = max(layer_id - index_skip_topk_offset + 1, 0) % freq != 0</pre>
+<ul>
+<li><code>skip_topk=True</code> → 本层<strong>不跑 indexer</strong>，复用上一层传来的 index。</li>
+<li><code>next_skip_topk=True</code> → 把本层的 index <strong>返回给下一层</strong>用。</li>
+</ul>
+
+<div class="deep-dive"><strong>把算法和真实权重对上</strong>：GLM-5.2 的 checkpoint 只在层 <code>[0,1,2, 6,10,14,18,...]</code> 带 indexer 权重（见课 01 / 权重校验）。代入 offset 模式、<code>freq=4, offset=3</code>：<br>
+&nbsp;&nbsp;L=0,1,2 → <code>skip_topk=False</code>（dense 前缀，每层自算）<br>
+&nbsp;&nbsp;L=3,4,5 → <code>True</code>（复用 L2）&nbsp;|&nbsp; L=6 → <code>False</code>（重算）&nbsp;|&nbsp; L=7,8,9 → <code>True</code> …<br>
+正好复现 <code>[0,1,2,6,10,14,...]</code>。<strong>关键洞察：<code>skip_topk</code> 的层在 checkpoint 里根本没有 indexer 权重</strong>（forward_mla.py:253 注释明说"shared layers carry no indexer weights"）。所以复用不是"省着算"的优化选项，而是<mark>结构性强制——没权重可算，只能复用</mark>。</div>
+
+<h3>3.2 层内的门控：算 or 复用</h3>
+<pre>deepseek_common/attention_forward_methods/forward_mla.py:261
+if not self.skip_topk or (self.is_nextn and prev_topk_indices is None):
+    topk_indices = self.indexer(x=hidden_states, q_lora=q_lora, ...)   # 自己算
+else:
+    # 复用上一层传来的 index
+    topk_indices = maybe_capture_indexer_topk(self.layer_id, prev_topk_indices)
+...
+# 函数末尾 (748): 决定要不要把 index 传给下一层
+if self.next_skip_topk is None:   return output
+if not self.next_skip_topk:       return output, None          # 下层自己算
+else:                             return output, topk_indices  # 下层复用这个</pre>
+
+<div class="warning"><strong>这里藏着一个真实的 correctness trick（直接回答你的"有什么坑？"）</strong>：注释 forward_mla.py:253-260 警告——<strong>千万不要</strong>把门控条件放宽成 <code>or prev_topk_indices is None</code>。因为 <code>skip_topk</code> 层没有 indexer 权重，一旦 cross-layer 传递断了（比如 TBO 双批重叠路径会丢掉 topk_indices），fallback 去"自己算"就会用<strong>未初始化的 indexer</strong> 产生垃圾 index，导致选出 >index_topk 的乱序 token。唯一允许 fallback 的是 MTP 层（layer 78 有自己的权重）。<mark>这是"index 跨层传递"实现里最容易踩的隐性 bug。</mark></div>
+
+<h3>3.3 谁来串起来：model.forward 的层循环持有那个张量</h3>
+<pre>deepseek_v2.py:2477   topk_indices = None        # 循环外初始化
+deepseek_v2.py:2495   for i in ...:
+    hidden_states, residual, topk_indices = layer(
+        ..., prev_topk_indices=topk_indices,    # 上一轮的结果当这一轮的输入
+    )</pre>
+<p>就这么简单：一个普通的 Python 变量 <code>topk_indices</code>，在层循环里被反复读写。"重算层"把它刷新成新 index；"复用层"原样透传。没有 KV-pool 那种持久 buffer，没有全局 IndexCache 单例——<strong>共享的状态就活在这个循环变量里，生命周期 = 一次 forward</strong>。</p>
+
+<div class="mermaid">
+flowchart LR
+    init["topk_indices=None"] --> L0
+    subgraph LOOP["model.forward 层循环 (deepseek_v2.py:2495)"]
+      direction LR
+      L0["L2 重算<br/>skip=F,next=T"]:::calc -->|"返回新 idx"| L3["L3 复用<br/>skip=T,next=T"]:::reuse
+      L3 -->|"透传同一 idx"| L4["L4 复用"]:::reuse
+      L4 -->|"透传"| L5["L5 复用"]:::reuse
+      L5 -->|"透传"| L6["L6 重算<br/>skip=F"]:::calc
+      L6 -->|"返回新 idx"| L7["L7 复用..."]:::reuse
+    end
+    classDef calc fill:#ffcdd2,stroke:#e53935,stroke-width:2px;
+    classDef reuse fill:#c8e6c9,stroke:#43a047;
+</div>
+
+<div class="compare"><strong>对比你预期的实现</strong>：在我重写本课前，基于 fork（没有 IndexShare）的推测是"需要一个 per-forward-batch 的 IndexCache 缓存对象"。上游的真实做法更轻——<strong>根本不需要缓存容器，用层间函数参数传递就够了</strong>，因为层是顺序执行的，天然形成一条传递链。这是个很好的"不要过度设计"案例：能用调用栈传递的状态，就别建全局 cache。</div>
+
+<h2 id="p4">Part 4：MTP 跨迭代复用 —— 第二条复用通道</h2>
+
+<p>课 01 提到 <code>index_share_for_mtp_iteration=true</code>。它和 Part 3 的层间复用是<strong>两条正交的复用通道</strong>，对比着学最清楚：</p>
+
+<table>
+<tr><th></th><th>Part 3：层间复用</th><th>Part 4：MTP 迭代复用</th></tr>
+<tr><td>复用的维度</td><td><strong>空间</strong>（同一次 forward 内，跨 layer）</td><td><strong>时间</strong>（跨 speculative draft step）</td></tr>
+<tr><td>载体</td><td>层循环的局部变量 <code>topk_indices</code></td><td><code>forward_batch.topk_indices</code> 字段</td></tr>
+<tr><td>为什么是这个载体</td><td>层顺序执行，调用栈天然串起来</td><td>每个 draft step 是独立 forward，<mark>局部变量活不过去，必须挂在 batch 上</mark></td></tr>
+</table>
+
+<h3>4.1 GLM-5.2 的 MTP 复用的是 DeepSeek 的 nextn 类</h3>
+<pre>configs/model_config.py:421
+if is_draft_model and architectures[0] in [
+    "DeepseekV3ForCausalLM", "DeepseekV32ForCausalLM",
+    "GlmMoeDsaForCausalLM",                  # ← GLM 草稿模型
+]:
+    architectures[0] = "DeepseekV3ForCausalLMNextN"   # 改名复用 deepseek_nextn.py</pre>
+<p>注意：<strong>没有 <code>GlmMoeDsaForCausalLMNextN</code> 这个类</strong>。GLM-5.2 当 draft 模型跑时，架构名被直接改写成 DeepSeek 的 nextn，复用 <code>deepseek_nextn.py</code> 的 MTP 逻辑。这又是一次"零新文件"——连 MTP 都不写。</p>
+
+<h3>4.2 复用机制：draft 循环把 index 喂给 forward_batch</h3>
+<pre>speculative/eagle_worker_v2.py:193
+self.index_share_for_mtp_iteration = (
+    getattr(hf_config, "index_share_for_mtp_iteration", False)
+    and self.topk == 1          # ← 关键约束，见下方红框
+)
+
+eagle_worker_v2.py:555  (draft 循环开始前)
+if self.index_share_for_mtp_iteration:
+    forward_batch.reuse_mtp_topk_indices = True
+    forward_batch.topk_indices = None        # 第一步还没有, 置空
+
+deepseek_nextn.py:227  (每个 MTP 层 forward)
+hidden_states, residual, topk_indices = self.decoder(
+    ..., prev_topk_indices=(forward_batch.topk_indices
+                            if forward_batch.reuse_mtp_topk_indices else None))
+if forward_batch.reuse_mtp_topk_indices:
+    forward_batch.topk_indices = topk_indices   # 第一步算完, 写回 batch 供后续步复用</pre>
+
+<p>流程：第 1 个 draft step 时 <code>topk_indices=None</code> → MTP 层（<code>is_nextn</code> 使 <code>skip_topk=True</code> 但允许"无传入时自算"的 fallback）算出一份 index 并写回 <code>forward_batch.topk_indices</code>；后续 step 直接复用这份，不再重算。所有 step 跑完后清场（eagle_worker_v2.py:625 把两个字段还原）。</p>
+
+<div class="warning"><strong>又一个 correctness 约束（直接的 trick）</strong>：复用只在 <code>self.topk == 1</code> 时启用。注释 eagle_worker_v2.py:191 说明原因——<code>select_top_k_tokens</code> 在 topk&gt;1 时会<strong>重排 row 顺序</strong>，导致复用的 index 与当前 token 行错位（desync）。这是"时间复用"特有的坑：空间复用里层不会重排 token，时间复用里 speculative 的 tree 展开会。<mark>同样是复用 index，两条通道的失效模式完全不同</mark>——这正是值得你深挖的地方。</div>
+
+<h2 id="p5">Part 5："有什么 tricks?" —— 汇总</h2>
+
+<p>直接回答你最初的问题。上游让 GLM-5.2 day-0 跑起来，用了这些可复用的套路：</p>
+
+<table>
+<tr><th>Trick</th><th>是什么</th><th>file:line</th></tr>
+<tr><td><strong>能力探测 &gt; 身份判断</strong></td><td>用 <code>index_topk is not None</code> 而非 <code>arch=="GLM"</code> 决定走 DSA；新模型只需进白名单 set</td><td>model_config.py:103</td></tr>
+<tr><td><strong>继承而非重写</strong></td><td>3 行子类 <code>DeepseekV2ForCausalLM</code>，forward 全继承</td><td>glm4_moe.py:1481</td></tr>
+<tr><td><strong>显式传名绕硬检查</strong></td><td><code>determine_num_fused_shared_experts("GlmMoeDsaForCausalLM")</code></td><td>glm4_moe.py:1483</td></tr>
+<tr><td><strong>HF config 字段抢救</strong></td><td>HF 的 Config 类丢字段，从 raw config.json 重读 <code>qk_rope_head_dim</code>/<code>index_topk_freq</code></td><td>config.py:70</td></tr>
+<tr><td><strong>改名复用 nextn</strong></td><td>draft 模型架构名改写为 <code>DeepseekV3ForCausalLMNextN</code>，连 MTP 都不写新类</td><td>model_config.py:421</td></tr>
+<tr><td><strong>调用栈传状态</strong></td><td>层间共享 index 用循环局部变量传，不建全局 cache</td><td>deepseek_v2.py:2495</td></tr>
+<tr><td><strong>结构性强制复用</strong></td><td>shared 层 checkpoint 干脆不带 indexer 权重，杜绝"误算"</td><td>forward_mla.py:253</td></tr>
+<tr><td><strong>窄门控防退化</strong></td><td>MTP 复用仅 topk==1（避免 tree 重排 desync）；层门控禁止 None-fallback（避免未初始化 indexer）</td><td>eagle:191 / fwd_mla:255</td></tr>
+</table>
+
+<div class="key-insight"><strong>给 fork 的可执行结论</strong>：百度 <code>aiak_sglang</code> 要支持 GLM-5.2，<strong>不要手写</strong>。把上游这 8 个改动点对应的 commit cherry-pick 回来即可——核心是 <code>is_deepseek_dsa</code> 名单、<code>glm4_moe.py</code> 的 3 行子类、<code>config.py</code> 的字段抢救、以及 DSA 通用代码里的 <code>skip_topk</code>/<code>prev_topk_indices</code> 那套层间传递。<a href="../reference/sglang-day0-checklist.html">Day-0 拆解卡</a> 列了完整清单。</div>
+
+<h2 id="p6">Part 6：检索练习</h2>
+<p class="citation">合上页面凭记忆作答，再展开核对。</p>
+
+<div class="quiz">
+<details>
+<summary>Q1. 上游 SGLang 判断"这个模型要不要走 DSA 稀疏路径"，靠的是什么？答出实质判据。</summary>
+<p>靠能力探测 <code>is_deepseek_dsa()</code>：架构名进白名单 set 且 <code>config.index_topk is not None</code>。是"<strong>有没有这个能力字段</strong>"，不是"<strong>是不是叫 GLM</strong>"。</p>
+</details>
+</div>
+
+<div class="quiz">
+<details>
+<summary>Q2. GlmMoeDsaForCausalLM 模型类自己写了多少计算逻辑？为什么能这么少？</summary>
+<p>几乎没有：3 行子类继承 <code>DeepseekV2ForCausalLM</code>，只覆盖共享专家融合的传名。因为 MLA+DSA+MoE 全是 DeepSeek 通用代码，GLM 只需声明能力即可复用。</p>
+</details>
+</div>
+
+<div class="quiz">
+<details>
+<summary>Q3. IndexShare 跨层共享的 index，物理上存在哪里？不是什么？</summary>
+<p>存在 <code>model.forward</code> 层循环的<strong>局部变量 topk_indices</strong> 里，靠 <code>prev_topk_indices</code> 参数一层层传。不是全局 cache、不是持久 KV buffer——生命周期就一次 forward。</p>
+</details>
+</div>
+
+<div class="quiz">
+<details>
+<summary>Q4. 为什么 shared 层不能在 prev_topk_indices 为 None 时 fallback 去自己算 index？</summary>
+<p>因为 <code>skip_topk</code> 层的 checkpoint <strong>根本不带 indexer 权重</strong>，自己算会用未初始化 indexer 产出乱序 index（选出 &gt;index_topk 的垃圾）。仅 MTP 层有自己权重可 fallback。</p>
+</details>
+</div>
+
+<div class="quiz">
+<details>
+<summary>Q5. 层间复用与 MTP 迭代复用，载体分别是什么？为什么不同？</summary>
+<p>层间用<strong>循环局部变量</strong>（层顺序执行，调用栈串得起来）；MTP 用 <code>forward_batch.topk_indices</code> <strong>字段</strong>（每 draft step 是独立 forward，局部变量活不过去，必须挂 batch）。</p>
+</details>
+</div>
+
+<div class="quiz">
+<details>
+<summary>Q6. index_share_for_mtp_iteration 为什么限定 topk==1？</summary>
+<p>因为 <code>select_top_k_tokens</code> 在 topk&gt;1 时会<strong>重排 row 顺序</strong>，复用的 index 会与当前 token 行错位（desync）。这是时间复用特有的失效模式。</p>
+</details>
+</div>
+
+<div class="quiz">
+<details>
+<summary>Q7. config.py:70 那段"重读 config.json"的 trick 抢救了哪两个字段？丢了各有什么后果？</summary>
+<p>抢救 <code>qk_rope_head_dim</code>（丢了 MLA rope 维度错、attention 崩）和 <code>index_topk_freq</code>（丢了 IndexShare 退化成每层重算、损失 2.9× 加速）。HF Config 类会 clobber 它们。</p>
+</details>
+</div>
+
+<div class="deep-dive" style="margin-top:2em;">
+<strong>下一步</strong><br>
+① <strong>动手</strong>：在 <span class="file">PUBLIC_REPO/sglang</span> 读完整的 <code>forward_absorb_prepare</code>（forward_mla.py:240-296）+ 层循环（deepseek_v2.py:2477-2504），把 <code>prev_topk_indices</code> 的传递在脑子里走一遍。这是本课最值得亲手追的一段。<br>
+② <strong>给 fork 落地</strong>：对照 <a href="../reference/sglang-day0-checklist.html">Day-0 拆解卡</a>，确认 <code>aiak_sglang</code> 缺哪些 commit，规划 cherry-pick。<br>
+③ <strong>主读物</strong>：arXiv:2603.12201 <em>IndexCache</em>，看论文怎么论证跨层复用的质量安全性——和你刚读到的 <code>skip_topk</code> 实现对照。<br>
+④ <strong>随时问我</strong>：比如"TBO 双批重叠为什么会丢 topk_indices、上游怎么补的""dsa 后端的 forward_extend/decode 怎么消费这份 index""CP（context parallel）切分下 index 如何对齐"——这些是把这套机制吃到底的真问题。
+</div>
+
+<div class="footer">课 02 / GLM-5.2-FP8 教学 · file:line 源自 PUBLIC_REPO/sglang @b8a73bfba0 实证 · 配套 <a href="../reference/sglang-day0-checklist.html">Day-0 拆解卡</a> 与 <a href="../reference/glossary.html">术语表</a></div>
+
+
+
+
+
+</body>
+</html>

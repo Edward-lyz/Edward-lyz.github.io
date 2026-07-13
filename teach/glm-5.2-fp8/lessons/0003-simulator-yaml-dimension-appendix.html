@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang='zh-CN'>
+<head>
+<meta charset='utf-8'>
+<title>附录 A: GLM-5.2 simulator YAML 语义核对</title>
+<style>
+body { font-family: 'Palatino Linotype', Palatino, serif; max-width: 980px; margin: 2em auto; padding: 0 1.5em; color: #2a2a2a; line-height: 1.8; }
+h1 { font-size: 1.7em; border-bottom: 2px solid #222; padding-bottom: 0.3em; }
+h2 { font-size: 1.34em; margin-top: 2.4em; border-left: 4px solid #6a1b9a; padding-left: 0.6em; }
+h3 { font-size: 1.12em; margin-top: 1.7em; color: #444; }
+table { border-collapse: collapse; margin: 1em 0; width: 100%; }
+th, td { border: 1px solid #ccc; padding: 0.45em 0.8em; text-align: left; font-size: 0.88em; vertical-align: top; }
+th { background: #f3e5f5; }
+code { background: #f0f0f0; padding: 0.15em 0.4em; border-radius: 3px; font-size: 0.85em; font-family: 'SF Mono', Menlo, monospace; }
+pre { background: #f8f8f8; padding: 1em; border-radius: 4px; overflow-x: auto; font-size: 0.83em; line-height: 1.5; }
+.nav { font-size: 0.85em; color: #888; margin-bottom: 2em; }
+.toc { background: #f9f9f9; border: 1px solid #eee; padding: 0.8em 1.5em; margin: 1.5em 0; }
+.key-insight { background: #fffde7; border-left: 4px solid #f9a825; padding: 0.8em 1.1em; margin: 1.2em 0; }
+.warning { background: #fce4ec; border-left: 4px solid #e53935; padding: 0.8em 1.1em; margin: 1.2em 0; }
+.compare { background: #e3f2fd; border-left: 4px solid #1e88e5; padding: 0.8em 1.1em; margin: 1.2em 0; }
+.deep-dive { background: #e8f5e9; border-left: 4px solid #43a047; padding: 0.8em 1.1em; margin: 1.2em 0; }
+.quiz { background: #f3e5f5; border: 1px solid #ce93d8; border-radius: 4px; padding: 1em; margin: 1.3em 0; }
+.quiz summary { cursor: pointer; font-weight: bold; }
+.file { color: #6a1b9a; font-family: 'SF Mono', Menlo, monospace; font-size: 0.82em; }
+.footer { margin-top: 3em; padding-top: 1em; border-top: 1px solid #ddd; font-size: 0.9em; color: #666; }
+.ok { color: #2e7d32; font-weight: bold; }
+.bad { color: #c62828; font-weight: bold; }
+</style>
+</head>
+<body>
+<div class='nav'><a href='0001-glm52-architecture-indexshare.html'>课 01</a> · <a href='0002-sglang-day0-enablement.html'>课 02</a> · 附录 A · <a href='../reference/glossary.html'>术语表</a></div>
+<h1>附录 A：simulator YAML 语义核对<br><small style='font-size:0.58em;color:#777;'>head_dim、indexer_k_norm、MTP 为什么必须按 HF 权重 + SGLang 实现建模</small></h1>
+<div class='toc'>
+<strong>目录</strong>
+<ul>
+<li><a href='#p0'>Part 0：结论先行</a></li>
+<li><a href='#p1'>Part 1：head_dim 为什么要拆清楚</a></li>
+<li><a href='#p2'>Part 2：indexer_k_norm 为什么是 LayerNorm</a></li>
+<li><a href='#p3'>Part 3：MTP 为什么是两个 norm + 一个大 GEMM</a></li>
+<li><a href='#p4'>Part 4：映射到当前 simulator YAML</a></li>
+<li><a href='#p5'>Part 5：自测题</a></li>
+</ul>
+</div>
+<p>证据基准：HF raw config 与 safetensors index；社区上游 <span class='file'>PUBLIC_REPO/sglang</span> commit <code>b8a73bfba0</code>；本地 simulator 目标 <span class='file'>BAIDU_REPO/aiak_ds_tool/.../models/glm_5_2/glm_5_2.yaml</span>。</p>
+<h2 id='p0'>Part 0：结论先行</h2>
+<table>
+<tr><th>疑问</th><th>短答案</th><th>如果不改会怎样</th></tr>
+<tr><td><code>head_dim</code> 为啥写这么细</td><td>GLM-5.2 同时有 <code>qk_nope=192</code>、<code>qk_rope=64</code>、<code>qk=256</code>、<code>v=256</code>、<code>kv_latent=576</code>、<code>sparse_mla=576</code>。一个字段装不下这些语义。</td><td>CP all-gather、SparseMLA DB shape、q_b/kv_b/o_proj 的 GEMM 维度会互相污染。</td></tr>
+<tr><td><code>indexer_k_norm</code> 为啥是 LayerNorm</td><td>权重里有 <code>k_norm.weight</code> + <code>k_norm.bias</code>；SGLang 代码直接实例化 <code>LayerNorm</code>。</td><td>RMSNorm 没 mean subtraction、通常无 bias，数值语义和 profiler IO 都错。</td></tr>
+<tr><td>MTP 为啥两个 norm + 一个大 GEMM</td><td>SGLang NextN 先分别 normalize draft embed 与 target hidden，再 concat 成 <code>2H</code>，用单个 <code>eh_proj: 2H → H</code> 融合。</td><td>拆成 <code>e_proj/h_proj</code> 会漏两个 norm、漏 concat 语义、漏真实 GEMM shape，decode 路径还会少 speculative draft 开销。</td></tr>
+</table>
+<div class='key-insight'><strong>一句话原则</strong>：simulator YAML 是性能模型的形状契约。凡是被不同算子消费的维度，必须用不同字段表达；否则 parsed/query 能过，result 和 profiler 语义仍可能错。</div>
+<h2 id='p1'>Part 1：head_dim 为什么要拆清楚</h2>
+<p>GLM-5.2 和 DeepSeek V3.2 属于同一类 MLA/DSA 结构，都会把 Q/K 拆成 no-RoPE 部分和 RoPE 部分，也都会把 KV cache 存成 latent cache。问题不在模型思想差异，而在 <code>head_dim</code> 这个名字在不同代码层表达的不是同一个东西。</p>
+<h3>1.1 GLM-5.2 里至少有 5 个 head-like 维度</h3>
+<table>
+<tr><th>字段</th><th>值</th><th>来源/公式</th><th>消费者</th></tr>
+<tr><td><code>head_dim</code></td><td>192</td><td>HF config 字段；等价于 <code>qk_nope_head_dim</code></td><td>不要拿它当通用 head dim</td></tr>
+<tr><td><code>qk_rope_head_dim</code></td><td>64</td><td>HF config</td><td>main RoPE、indexer RoPE</td></tr>
+<tr><td><code>qk_head_dim</code></td><td>256</td><td><code>192 + 64</code></td><td><code>q_b_proj</code> 输出：<code>64 * 256</code></td></tr>
+<tr><td><code>v_head_dim</code></td><td>256</td><td>HF config</td><td><code>o_proj</code> 输入：<code>64 * 256</code></td></tr>
+<tr><td><code>kv_latent_cache_dim</code></td><td>576</td><td><code>kv_lora_rank 512 + rope 64</code></td><td>CP KV cache all-gather/rerange</td></tr>
+<tr><td><code>sparse_mla_head_dim</code></td><td>576</td><td><code>nope 192 + v 256 + rope 64</code></td><td>DSA SparseMLA kernel query shape</td></tr>
+</table>
+<h3>1.2 为什么之前不区分，现在必须区分</h3>
+<p>老 YAML 里 <code>head_dim=256</code> 被当作 <code>v_head_dim</code> alias 使用；局部看没问题，因为 <code>qk_head_dim</code> 和 <code>v_head_dim</code> 恰好都等于 256。但同一个字段后来被 CP 策略拿去当 KV cache all-gather 的 hidden size。这个 hidden size 真实值是 <code>512+64=576</code>，不是 256，更不是 HF 的 192。</p>
+<pre>deepseek_v2.py:1943-1955
+latent_cache[..., : self.kv_lora_rank] = k_nope.squeeze(1)
+latent_cache[..., self.kv_lora_rank :] = k_pe.squeeze(1)
+latent_cache_output = cp_all_gather_rerange_output(...)
+k_nope = latent_cache_output[..., : self.kv_lora_rank]
+k_pe = latent_cache_output[..., self.kv_lora_rank :]</pre>
+<p>这段说明 CP all-gather 的对象是 latent cache：前半段 <code>kv_lora_rank</code>，后半段 <code>qk_rope_head_dim</code>。GLM-5.2 是 <code>512 + 64 = 576</code>。</p>
+<div class='warning'><strong>反证法</strong>：如果继续用一个 <code>head_dim</code>，它要同时等于 192、256、576。只有两种结果：要么策略代码靠上下文猜含义，要么某条路径静默错形状。两者都比显式字段更危险。</div>
+<h3>1.3 与 DeepSeek V3.2 的关系</h3>
+<p>GLM-5.2 和 DS V3.2 的结构确实相近：都是 DeepSeek-style MLA + DSA/Indexer，SGLang 也让 GLM 继承 <code>DeepseekV2ForCausalLM</code>。但这只说明公式相近，不说明某个叫 <code>head_dim</code> 的字段可被全局复用。</p>
+<div class='compare'><strong>正确类比</strong>：DS V3.2 和 GLM-5.2 都需要分清 <code>qk_nope</code>、<code>qk_rope</code>、<code>v_head</code>、<code>kv_latent</code>。如果旧 simulator 没分清，只是旧债没暴露；不是 GLM-5.2 可以继续混用的理由。</div>
+<h2 id='p2'>Part 2：indexer_k_norm 为什么是 LayerNorm</h2>
+<h3>2.1 权重证据：它有 bias</h3>
+<p>HF safetensors index 里，full-indexer 层存在：</p>
+<pre>model.layers.0.self_attn.indexer.k_norm.weight
+model.layers.0.self_attn.indexer.k_norm.bias</pre>
+<p>shared-indexer 层，例如 layer 3，没有 indexer k_norm tensors。这个分布与 SGLang 的 <code>skip_topk</code> 逻辑一致：full 层有 indexer 权重，shared 层复用前一层 topk。</p>
+<div class='key-insight'><strong>bias 是关键物证</strong>：RMSNorm 只按均方根缩放，通常只有 weight；LayerNorm 是减均值、除标准差、再乘 weight 加 bias。出现 <code>k_norm.bias</code>，就不能把它建模成 RMSNorm。</div>
+<h3>2.2 代码证据：SGLang 明确实例化 LayerNorm</h3>
+<pre>dsa_indexer.py:368-370
+self.k_norm = LayerNorm(
+    self.head_dim, dtype=torch.bfloat16 if _use_aiter else torch.float32
+)</pre>
+<p>随后 key 路径是：</p>
+<pre>dsa_indexer.py:479-485
+key, _ = self.wk(x)
+key = self.k_norm(key)
+k_rope, _ = torch.split(key, [self.rope_head_dim, self.head_dim - self.rope_head_dim], dim=-1)
+q_rope, k_rope = self.rotary_emb(positions, q_rope, k_rope)</pre>
+<p>注意这里 <code>q_lora</code> 已经在主 MLA 路径里经过 <code>q_a_layernorm</code>，但 indexer 的 <code>wq_b</code> 之后没有 <code>q_b_norm</code>。我们补的是 key 侧的 <code>k_norm</code>，不是凭空给 q_b 加 norm。</p>
+<h2 id='p3'>Part 3：MTP 为什么是两个 norm + 一个大 GEMM</h2>
+<h3>3.1 权重名字已经给出结构</h3>
+<p>HF 权重 index 的 MTP 特殊张量是：</p>
+<pre>model.layers.78.enorm.weight
+model.layers.78.hnorm.weight
+model.layers.78.eh_proj.weight
+model.layers.78.shared_head.norm.weight</pre>
+<p>这不是 <code>e_proj.weight</code> + <code>h_proj.weight</code>，而是两个 norm + 一个 <code>eh_proj</code>。名字已经说明它先处理 <code>e</code> 和 <code>h</code>，再用一个投影融合。</p>
+<h3>3.2 SGLang 代码：draft model 被改写成 NextN</h3>
+<pre>model_config.py:421-426
+if is_draft_model and self.hf_config.architectures[0] in [
+    'DeepseekV3ForCausalLM', 'DeepseekV32ForCausalLM', 'GlmMoeDsaForCausalLM',
+]:
+    self.hf_config.architectures[0] = 'DeepseekV3ForCausalLMNextN'</pre>
+<p>GLM-5.2 的 speculative draft 层直接复用 DeepSeek NextN 实现。NextN 初始化：</p>
+<pre>deepseek_nextn.py:106-120
+self.enorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+self.hnorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+self.eh_proj = nn.Linear(2 * config.hidden_size, config.hidden_size, bias=False)</pre>
+<p>NextN forward：</p>
+<pre>deepseek_nextn.py:201-218
+eh_input = torch.cat(
+    (self.enorm(hidden_states), self.hnorm(forward_batch.spec_info.hidden_states)),
+    dim=-1,
+)
+hidden_states = self.eh_proj(eh_input)</pre>
+<h3>3.3 为什么不是两个小 GEMM</h3>
+<p>在线性代数上，单个 <code>[H, 2H]</code> 矩阵可以切成左右两半，看起来像 <code>W_e e + W_h h</code>。但 simulator 不能只看代数等价，还要匹配真实实现的 kernel shape 和前后算子。</p>
+<table>
+<tr><th>角度</th><th>单个 eh_proj</th><th>两个 e_proj/h_proj</th></tr>
+<tr><td>权重命名</td><td><span class='ok'>匹配 <code>eh_proj.weight</code></span></td><td><span class='bad'>权重里无这两个名字</span></td></tr>
+<tr><td>前处理</td><td><span class='ok'>显式建模 <code>enorm/hnorm</code></span></td><td><span class='bad'>旧 YAML 漏掉两个 norm</span></td></tr>
+<tr><td>GEMM shape</td><td><span class='ok'><code>m x 6144 x 12288</code></span></td><td><span class='bad'>两个 <code>m x 6144 x 6144</code>，DB/profiler shape 不同</span></td></tr>
+<tr><td>实现路径</td><td><span class='ok'>符合 SGLang forward</span></td><td><span class='bad'>需要额外 add/mix，旧 YAML 没有表达</span></td></tr>
+</table>
+<div class='warning'><strong>关键边界</strong>：如果某个后端真实把 <code>eh_proj</code> 拆成两个 GEMM 并显式 add，那 simulator 可以按真实后端拆。但 SGLang 社区代码不是这样写的；当前 YAML 应先对齐真实模型路径。</div>
+<h3>3.4 为什么 decode 也要保留 MTP</h3>
+<p>MTP 的主要用途就是 speculative decoding。SGLang 在 NextN decoder 里还把 topk indices 复用接进来：</p>
+<pre>deepseek_nextn.py:227-240
+hidden_states, residual, topk_indices = self.decoder(
+    ...,
+    prev_topk_indices=(forward_batch.topk_indices if forward_batch.reuse_mtp_topk_indices else None),
+)
+if forward_batch.reuse_mtp_topk_indices:
+    forward_batch.topk_indices = topk_indices</pre>
+<p>所以 decode 时删除 <code>mtp_proj</code> 会刚好删掉 speculative draft 的入口开销。这不是优化，是路径缺失。</p>
+<h2 id='p4'>Part 4：映射到当前 simulator YAML</h2>
+<table>
+<tr><th>文件</th><th>当前建模</th><th>证据点</th></tr>
+<tr><td><span class='file'>glm_5_2.yaml:14-25</span></td><td>显式区分 <code>head_dim=192</code>、<code>qk_head_dim=256</code>、<code>v_head_dim=256</code>、<code>kv_latent_cache_dim=576</code>、<code>sparse_mla_head_dim=576</code></td><td>避免 CP、SparseMLA、GEMM 共享一个含糊字段</td></tr>
+<tr><td><span class='file'>cp.py:108-125</span></td><td>CP KV all-gather 使用 <code>kv_latent_cache_dim</code></td><td>SGLang rebuild_cp_kv_cache 拼接 <code>kv_lora_rank + qk_rope_head_dim</code></td></tr>
+<tr><td><span class='file'>glm_5_2.yaml:338-352</span></td><td><code>indexer_k_norm</code> 改 <code>LayerNormOp</code>，并补 <code>indexer_rope</code></td><td>SGLang <code>Indexer.k_norm = LayerNorm</code>，然后 split rope slice 并 apply RoPE</td></tr>
+<tr><td><span class='file'>misc.py:198-245</span></td><td>注册 <code>LayerNormOp</code></td><td>LayerNorm 不能 hidden fallback 到 RMSNorm</td></tr>
+<tr><td><span class='file'>x_bf16_eps_fp32_layernorm_fp32/operator.py</span></td><td>注册具体算子 query key：<code>batch_size, hidden_size, num_heads</code></td><td>profiler config 可生成真实采集项</td></tr>
+<tr><td><span class='file'>glm_5_2.yaml:624-671</span></td><td>MTP 建模 <code>enorm/hnorm/quant_mtp_input/eh_proj/shared_head.norm</code></td><td>对齐 <code>deepseek_nextn.py</code> 与 HF 权重名</td></tr>
+</table>
+<div class='deep-dive'><strong>补充</strong>：LayerNorm backend version 已固定为 <code>flashinfer 0.6.12</code>。query/profiler config 能输出 <code>x_bf16_eps_fp32_layernorm_fp32</code>；但 result 阶段仍需要对应 B200 DB 采集数据，否则会因缺 shape 而失败。这是显式缺数据，不是 hidden fallback。</div>
+<h2 id='p5'>Part 5：自测题</h2>
+<div class='quiz'><details><summary>Q1. 为什么 <code>head_dim=256</code> 在 GLM-5.2 YAML 里危险？</summary><p>因为 256 只能表示 <code>qk_head_dim</code> 或 <code>v_head_dim</code>，不能表示 HF 的 <code>head_dim=192</code>，也不能表示 CP KV cache 的 <code>576</code>。字段名一旦被策略代码复用，就会错形状。</p></details></div>
+<div class='quiz'><details><summary>Q2. 判断 <code>indexer_k_norm</code> 是 LayerNorm 的最短证据链是什么？</summary><p>权重 index 有 <code>indexer.k_norm.bias</code>；SGLang 代码有 <code>self.k_norm = LayerNorm(...)</code>；forward 中 <code>key = self.k_norm(key)</code> 后再 split rope 并 apply RoPE。</p></details></div>
+<div class='quiz'><details><summary>Q3. MTP 的两个 norm 分别归一化什么？</summary><p><code>enorm</code> 归一化 draft/input embedding 侧的 <code>hidden_states</code>；<code>hnorm</code> 归一化 target model 传来的 <code>forward_batch.spec_info.hidden_states</code>。两者 concat 后进 <code>eh_proj</code>。</p></details></div>
+<div class='quiz'><details><summary>Q4. 两个 <code>6144x6144</code> GEMM 在数学上看似可行，为什么 simulator 仍改成一个 <code>6144x12288</code> GEMM？</summary><p>因为 simulator 要对齐真实 kernel shape、权重命名、quant/profiler 数据和 forward 路径。SGLang 调的是一个 <code>eh_proj(cat(...))</code>，不是两个投影加和。</p></details></div>
+<div class='footer'>附录 A / GLM-5.2-FP8 教学 · 生成日期 2026-06-17 · 证据来自 HF 权重索引、SGLang @b8a73bfba0、本地 simulator YAML 修正</div>
+</body>
+</html>

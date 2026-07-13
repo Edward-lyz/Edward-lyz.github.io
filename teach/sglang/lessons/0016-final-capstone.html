@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第十六课：最终 Capstone</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script defer src="../assets/quiz.js"></script>
+</head>
+<body>
+<h1>最终 Capstone：从请求到带 benchmark 的 hot-path 修改</h1>
+<p class="outcome">完成本课任务后，你能独立产出一份跨 Scheduler、KV Cache、DPA/EP 的调用链分析，并用 correctness tests 与 benchmark 证明一个 hot-path 修改的价值。</p>
+
+<h2>场景</h2>
+<p>固定代码 <code>v0.5.15</code>，8 张 GPU，配置 <code>tp=8, dp=8, ep=8, DPA on, DeepEP auto</code>。请求 A 与 B 共享 3,072-token prefix；A prompt 8,192 tokens，B prompt 4,096 tokens，chunk size 2,048。系统已有 running decode，KV pressure 在 A 的第三个 chunk 后触发一次 retraction。B 的 TopK 选择了远端 experts。</p>
+
+<h2>交付一：画出一次请求 trace</h2>
+<p>不看参考答案，先在纸上或 Markdown 中填写下列六栏，每一栏都写具体函数与 ownership：</p>
+<ol>
+<li>进程：从 <code>DataParallelController</code> 到哪一个 DPA Scheduler rank。</li>
+<li>调度：A/B 的 waiting、chunked EXTEND、<code>last_batch</code>、running DECODE 状态。</li>
+<li>KV：request row、3,072 prefix indices、新 physical slots、Radix canonical slots。</li>
+<li>压力：eviction、protected prefix、retraction、requeue 的严格顺序。</li>
+<li>并行：local attention、MLP token gather、TopK、DeepEP dispatch/combine。</li>
+<li>输出：采样结果回到哪个 request owner，finish 后哪些 slots 留在 tree。</li>
+</ol>
+<details>
+<summary>展开核对不变量</summary>
+<ul>
+<li>物理 Scheduler processes 是 8，不是 <code>tp × dp = 64</code>。</li>
+<li>A/B 各由一个 DPA rank 拥有 request/KV；共享 prefix 只在同一 cache namespace 与 owner 可直接复用。</li>
+<li>chunked request 在完成前不合入 running decode；每个已完成 chunk 会 stash/cache。</li>
+<li>decode pressure 先驱逐 unlocked leaves，仍不足才 retract；protected prefix 不可驱逐。</li>
+<li>Attention 使用本地 request/KV；MoE token 发往 expert owner，combine 回 source token。</li>
+<li>finish 把 committed、对齐 KV ownership 转给 Radix Tree，释放 duplicate/tail 与 request row。</li>
+</ul>
+</details>
+
+<h2>交付二：做一次故障诊断</h2>
+<p>假设 benchmark 显示平均 throughput 上升 8%，但 p99 ITL 退化 35%，retraction 从 0 增至每分钟 14 次。你的结论不能是整体更快。先用下列顺序定位：</p>
+<pre><code>arrival trace unchanged?
+→ prefill/decode batch token counts
+→ free / evictable / protected
+→ PrefillAdder future reservation
+→ page alignment overhead
+→ retracted request and recomputed tokens
+→ DPA token imbalance / IDLE frequency
+→ DeepEP normal vs low-latency resolution</code></pre>
+<p>必须给出一个可证伪预测，例如降低 admitted running requests 后 retraction 应下降，若 ITL 不恢复则主要原因不是 KV pressure。</p>
+
+<h2>交付三：hot-path 修改</h2>
+<p>从两条路径选一条，先 profile 再改；如果 profiler 不支持瓶颈假设，应停止修改而不是制造优化。</p>
+<table>
+<thead><tr><th>候选</th><th>Correctness 基线</th><th>Benchmark 基线</th></tr></thead>
+<tbody>
+<tr><td><code>PrefillAdder.add_one_req</code> 或 budget calculation</td><td><code>test/registered/unit/managers/test_prefill_adder.py</code></td><td>固定 waiting/running 分布的 CPU microbenchmark + serving trace</td></tr>
+<tr><td><code>RadixKey.match</code> 或 <code>_match_prefix_helper</code></td><td><code>test/registered/unit/mem_cache/test_radix_cache_unit.py</code></td><td>early mismatch、late mismatch、exact hit 三种 prefix 分布</td></tr>
+</tbody>
+</table>
+<p>修改前先写自然语言等价性：输入 domain、输出、tree mutation、page alignment、<code>extra_key</code> 和 lock accounting 不变。然后保留相同 commit、硬件、seed、warmup、trace，报告 median 与 tail，不只报告最好一次。</p>
+
+<h2>验收标准</h2>
+<ul>
+<li>能从函数入口追到 physical KV slot，不跳过 ownership transition。</li>
+<li>能手算至少两个 admission 与 page-alignment 例子。</li>
+<li>能为 <code>tp/dp/ep</code> 配置列出每个 collective 的 group。</li>
+<li>修改通过既有 correctness tests，并新增一个会在错误实现下失败的最小用例。</li>
+<li>microbenchmark 有统计分布，端到端 benchmark 同时报告 TTFT、ITL、tok/s、retraction 与 cache hit。</li>
+<li>若端到端收益不成立，明确撤回 patch；不以局部 microbenchmark 代替产品结论。</li>
+</ul>
+<div class="invariant"><strong>材料完成不等于能力已验收</strong>只有你提交 trace、诊断与 benchmark 证据后，才能把本课程 mission 的最终能力写入 learning record。</div>
+
+<h2>最终自检</h2>
+<div class="quiz" data-answer="4">
+<h3>一个 hot-path patch 的 microbenchmark 快 12%，但 serving p99 退化且 retraction 增加。正确结论是什么？</h3>
+<label><input type="radio" name="q16" value="1">局部更快即可合入</label>
+<label><input type="radio" name="q16" value="2">删除 tail 指标即可</label>
+<label><input type="radio" name="q16" value="3">增加并发掩盖退化</label>
+<label><input type="radio" name="q16" value="4">拒绝结论并定位因果</label>
+<div class="feedback correct" aria-live="polite">正确。局部速度不是端到端收益。先定位 retraction 与 p99 退化的因果；无法消除或解释时撤回 patch。</div>
+<div class="feedback incorrect" aria-live="polite">不对。课程验收要求 correctness 与端到端指标同时成立。不能用 microbenchmark 掩盖 tail latency 和 memory-pressure regression。</div>
+</div>
+</body>
+</html>

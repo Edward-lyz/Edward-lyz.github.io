@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>文章洞见与 SGLang v0.5.15 校正</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<h1>文章洞见与 SGLang v0.5.15 校正</h1>
+<p class="outcome">区分两篇优秀二手材料提供的解释框架、可迁移不变量和必须按固定 tag 重写的 API 细节。</p>
+
+<h2>材料定位</h2>
+<table>
+<thead><tr><th>材料</th><th>最强部分</th><th>版本风险</th></tr></thead>
+<tbody>
+<tr><td>SGLang 串讲</td><td>HTTP 到 Detokenizer 的全链路、normal/overlap、Scheduler/KV 连接、PD 对比</td><td>源码锚点接近 v0.5.5，部分命名和调度分支已变化</td></tr>
+<tr><td>KV Cache 工程实践文章</td><td>容量公式、优化 taxonomy、两级 pool、backend 读写、HiCache overlap</td><td>混合 SGLang、vLLM、AttentionStore 与论文结果，不能当成同一实现</td></tr>
+</tbody>
+</table>
+<p>两篇原始材料的可迁移洞见已经按固定 tag 重新核对并凝练到下表，不保留本机附件路径。</p>
+
+<h2>已经吸收进课程的洞见</h2>
+<table>
+<thead><tr><th>文章洞见</th><th>课程深化位置</th><th>固定 tag 验证点</th></tr></thead>
+<tbody>
+<tr><td>完整 request round-trip</td><td>Lesson 0001、0002</td><td>Engine、Scheduler、DetokenizerManager、TokenizerManager</td></tr>
+<tr><td>Normal 与 overlap 的一轮错位</td><td>Lesson 0001</td><td><code>event_loop_normal</code> / <code>event_loop_overlap</code></td></tr>
+<tr><td>排序 policy 与 admission 是两层</td><td>Lesson 0003</td><td><code>SchedulePolicy</code> / <code>PrefillAdder</code></td></tr>
+<tr><td>静态 pool 与动态 future reservation</td><td>Lesson 0003</td><td><code>mem_fraction_static</code> / <code>NewTokenRatioTracker</code></td></tr>
+<tr><td>KV 容量公式与优化 taxonomy</td><td>Lesson 0005</td><td>本 rank pool 的 heads、dims、tokens</td></tr>
+<tr><td>Backend 视角是读 history、写新 KV</td><td>Lesson 0006</td><td><code>out_cache_loc</code> / <code>set_kv_buffer</code></td></tr>
+<tr><td>MoE 通信与计算 backend 分层</td><td>Lesson 0011</td><td>Dispatcher / Runner</td></tr>
+<tr><td>HiCache 的两种 overlap</td><td>Lesson 0012</td><td>L3 prefetch、逐层 L2→L1 load-back</td></tr>
+<tr><td>统一调度与 PD 的系统权衡</td><td>Lesson 0013</td><td>destination preallocation、transfer、PREBUILT</td></tr>
+<tr><td>TTFT、ITL、throughput 要放在同一时间线</td><td>Lesson 0014</td><td>固定 trace 与分阶段指标</td></tr>
+</tbody>
+</table>
+
+<h2>必须校正的实现表述</h2>
+<ul>
+<li>旧文章中的 <code>being_chunked_req</code> 不能直接映射到 v0.5.15；固定 tag 使用 <code>chunked_req</code>，并在下一轮 stash 后排除未完成 request。</li>
+<li>DPA 下 GPU/Scheduler 数量不是简单的 <code>TP × DP</code>。<code>dp_size</code> 在 TP world 内重解释 attention ownership，进程数要从 Engine 启动循环重新推导。</li>
+<li>v0.5.15 类名是 <code>HiRadixCache</code>，不是文章里的 <code>HiRadixTree</code>。</li>
+<li>Radix key 不只是裸 token id；<code>extra_key</code> 还隔离 LoRA、cache salt 等 namespace，page size 约束 match granularity。</li>
+<li><code>token_to_kv_pool</code> 既有真实 K/V buffers，也有独立 allocator；课程必须区分 storage 与 free-list ownership。</li>
+<li>KV 容量公式必须使用 per-rank local KV heads 与 local request tokens；不能把全局 32 GiB 示例直接当成每张卡占用。</li>
+<li>文章中的性能倍数只对其模型、硬件、网络、上下文与请求分布成立，不作为 SGLang v0.5.15 的普遍结论。</li>
+</ul>
+
+<h2>没有纳入主线的内容</h2>
+<p>Fast constrained decoding、vLLM BlockPool/KV Connector、完整 KV sparsification survey、AttentionStore 内部实现与各类模型结构改造都很有价值，但它们不直接推进本课程的 Scheduler、KV ownership 与复杂并行目标。保留在资源列表，不扩张主调用链。</p>
+
+<h2>二手材料审计模板</h2>
+<pre><code>1. 这条话描述的是不变量、API 还是 benchmark？
+2. 它对应哪个 commit、模型与 backend？
+3. 固定 tag 中同名函数是否仍存在？
+4. ownership、状态转移与 failure behavior 是否相同？
+5. 若只保留解释结构，应该用哪个当前源码锚点重写？</code></pre>
+</body>
+</html>

@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第十二课：HiCache 的三级 KV 生命周期</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script defer src="../assets/quiz.js"></script>
+</head>
+<body>
+<h1>HiCache 的三级 KV 生命周期</h1>
+<p class="outcome">学完本课，你能从一次 L3 prefix hit 追踪 prefetch 与逐层 load-back overlap，选择 stop/write policy，并指出多 rank 一致性边界。</p>
+
+<h2>HiCache 扩展的是 tier metadata 与 transfer 生命周期</h2>
+<table>
+<thead><tr><th>Tier</th><th>介质</th><th>主要数据</th><th>典型代价</th></tr></thead>
+<tbody>
+<tr><td>L1</td><td>GPU memory</td><td>当前可供 attention 读取的 KV</td><td>容量最小、访问最快</td></tr>
+<tr><td>L2</td><td>Host memory</td><td>可 load-back 的 host KV pages</td><td>PCIe/NVLink transfer</td></tr>
+<tr><td>L3</td><td>External storage</td><td>跨实例或大容量持久 KV</td><td>存储与网络 I/O</td></tr>
+</tbody>
+</table>
+<p><code>HiRadixCache</code> 仍保留普通 Radix 的 token path 与 device <code>value</code>，同时让 node 保存 <code>host_value</code>、backup/prefetch 状态和 storage hashes。它不是第二套 token 语义，而是在相同 prefix namespace 上增加 tier residency。<span class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/docs/advanced_features/hicache_design.md">HiCache design</a> 与 <a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/mem_cache/hiradix_cache.py">hiradix_cache.py</a>。</span></p>
+
+<h2>一次 L3 hit 的主链</h2>
+<pre><code>1. request 在本地 HiRadix metadata 做 prefix match
+2. L1 resident prefix 可直接锁定
+3. L3 额外命中部分提交 prefetch
+4. storage backend 把 pages 放入 L2 host pool
+5. scheduler 等待/轮询 prefetch policy
+6. admission 前把需要部分 load back 到 L1 slots
+7. request row 写入最终 L1 physical indices
+8. 执行剩余 extend
+9. 新 KV 按 write policy 进入 L2/L3</code></pre>
+<p>Storage prefetch 与 GPU compute 异步，所以 node 还要管理 pending operation、host protection 和 ack。若只记录是否 hit，不记录数据何时真正 resident，就会把 I/O stall 错算成 model forward latency。<span class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/managers/cache_controller.py#L221-L369">cache_controller.py:221-369</a>。</span></p>
+
+<h2>HiCache 隐藏 I/O 的两个窗口</h2>
+
+<table>
+<thead><tr><th>窗口</th><th>被隐藏的工作</th><th>前台仍可能看到的代价</th></tr></thead>
+<tbody>
+<tr><td>Queue wait ↔ L3 prefetch</td><td>storage → host L2</td><td>调度到达时仍未完成的尾部</td></tr>
+<tr><td>Layer compute ↔ L2 load-back</td><td>host L2 → GPU L1，逐层完成</td><td>下一层 KV 未 ready 的等待</td></tr>
+</tbody>
+</table>
+
+<p><code>CacheController.start_loading</code> 在独立 load stream 中逐层调用 <code>load_to_device_per_layer</code>，每层完成后发布 event。因而 HiCache 不是先搬完所有 layers 再 forward 的单一阻塞 copy；它试图让第 i 层 compute 与后续层 transfer 形成 pipeline。收益取决于 transfer 是否能被 queueing/compute 覆盖，而不是只取决于 L2/L3 hit rate。<span class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/managers/cache_controller.py#L758-L801">cache_controller.py:758-801</a>。</span></p>
+
+<h2>Prefetch policy 决定延迟边界</h2>
+
+<ul>
+<li><code>best_effort</code>：request 被调度到时允许终止尚未完成的 prefetch，优先不阻塞。</li>
+<li><code>wait_complete</code>：只有 operation 完整结束才进入下一步，最大化可复用长度但可能放大 TTFT。</li>
+<li><code>timeout</code>：完成或超过按 token 数增长的 timeout 时终止，在 hit 与 SLO 间设边界。</li>
+</ul>
+
+<p>该决策还要跨 attention ranks 同步：任一 rank 不能单独提前终止并使用不同 prefix。<span class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/mem_cache/hiradix_cache.py#L1440-L1535">hiradix_cache.py:1440-1535</a>。</span></p>
+
+<h2>多 rank 只能使用共同完成的 prefix</h2>
+<p>一个 model-parallel request 的不同 attention ranks 必须对可用 prefix 长度达成一致。HiCache 对 storage hit、完成 token 数等同步值使用 <code>ReduceOp.MIN</code>：若 ranks 分别准备好 4,096、4,096、3,840、4,096 tokens，安全 frontier 是 3,840。取 max 会让一个 rank 读取尚未完成的 KV。</p>
+<div class="invariant"><strong>最慢 rank 定义 correctness frontier</strong>这不是负载均衡策略，而是同一次 distributed forward 对 sequence metadata 的一致性要求。</div>
+<p class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/mem_cache/hiradix_cache.py#L215-L260">hiradix_cache.py:215-260</a> 与 <a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/mem_cache/hiradix_cache.py#L1360-L1390">hiradix_cache.py:1360-1390</a>。</p>
+
+<h2>Write policy 是 hit rate 与 I/O 的交换</h2>
+<ul>
+<li><code>write_through</code>：新数据尽快写入慢 tier，复用机会高，但 I/O 最大。</li>
+<li><code>write_through_selective</code>：依据访问信号只备份较热数据。</li>
+<li><code>write_back</code>：驱逐时再写，前台 I/O 小，但慢 tier 可见更晚。</li>
+</ul>
+<p><code>page_size</code> 同时是 prefix 粒度与 I/O 粒度。大 page 降低 metadata/transfer overhead，却会把部分 prefix hit 向下截断；是否更快取决于真实 prefix 长度分布。</p>
+
+<h2>最小自检</h2>
+<div class="quiz" data-answer="2">
+<h3>四个 ranks 已完成的 load-back 长度为 4096、4096、3840、4096。共同可用长度是多少？</h3>
+<label><input type="radio" name="q12" value="1">四千零九十六 tokens</label>
+<label><input type="radio" name="q12" value="2">三千八百四十 tokens</label>
+<label><input type="radio" name="q12" value="3">一万六千一百二十八 tokens</label>
+<label><input type="radio" name="q12" value="4">四千零三十二 tokens</label>
+<div class="feedback correct" aria-live="polite">正确。Distributed forward 只能使用所有相关 ranks 都完成的 prefix，因此取最小值 3,840。</div>
+<div class="feedback incorrect" aria-live="polite">不对。任一 rank 尚未准备好的 KV 都不能被本轮共同 metadata 引用，所以安全 frontier 取 min。</div>
+</div>
+<div class="quiz" data-answer="3">
+<h3>要优先约束 TTFT，不等待完整 L3 prefetch，最符合哪种 stop policy？</h3>
+<label><input type="radio" name="q12b" value="1"><code>wait_complete</code></label>
+<label><input type="radio" name="q12b" value="2"><code>write_through</code></label>
+<label><input type="radio" name="q12b" value="3"><code>best_effort</code></label>
+<label><input type="radio" name="q12b" value="4"><code>write_back</code></label>
+<div class="feedback correct" aria-live="polite">正确。Best effort 允许在 request 被调度时终止未完成 prefetch，优先避免继续等待。</div>
+<div class="feedback incorrect" aria-live="polite">不对。Write policies 管写回，不是 prefetch stop；wait_complete 会等待完整完成。</div>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>术语表：GLM-5.2 架构与 SGLang DSA 实现</title>
+<style>
+  body { font-family: 'Palatino Linotype', 'Book Antiqua', Palatino, serif; max-width: 920px; margin: 2em auto; padding: 0 1.5em; color: #222; line-height: 1.65; }
+  h1 { font-size: 1.5em; border-bottom: 3px solid #333; padding-bottom: 0.3em; }
+  h2 { font-size: 1.18em; margin-top: 1.8em; color: #333; border-left: 4px solid #607d8b; padding-left: 0.6em; }
+  .term { margin: 0.9em 0; }
+  .term b { color: #1a1a1a; font-size: 1.02em; }
+  .term .def { margin: 0.2em 0 0 0; }
+  .avoid { font-size: 0.82em; color: #b71c1c; font-style: italic; }
+  code { background: #f0f0f0; padding: 0.1em 0.34em; border-radius: 3px; font-size: 0.84em; font-family: 'SF Mono', Menlo, monospace; }
+  .nav { font-size: 0.85em; color: #888; margin-bottom: 1.5em; }
+  .footer { margin-top: 2.5em; padding-top: 1em; border-top: 1px solid #ddd; font-size: 0.82em; color: #666; }
+  @media print { body { max-width: 100%; font-size: 11px; } h2 { page-break-after: avoid; } .term { page-break-inside: avoid; } .nav, .footer { display: none; } }
+</style>
+</head>
+<body>
+<div class="nav"><a href="../lessons/0001-glm52-architecture-indexshare.html">课 01</a> · <a href="../lessons/0002-sglang-day0-enablement.html">课 02</a> · <a href="./architecture-cheatsheet.html">架构速查卡</a> · <a href="./sglang-day0-checklist.html">Day-0 拆解卡</a></div>
+
+<h1>术语表：GLM-5.2 架构与 SGLang DSA 实现</h1>
+<p style="font-size:0.86em;color:#555;">本 workspace 的规范命名。所有课件、记录沿用这里的术语与首选词。GLM-5.2 = MLA + DSA + IndexShare 的超长上下文 MoE 模型。</p>
+
+<h2>算法 / 架构</h2>
+
+<div class="term"><b>DSA（Dynamic Sparse Attention）</b>
+<p class="def">单层内的稀疏注意力：用轻量 indexer 为每个 query 选出 top-<code>index_topk</code>（GLM-5.2=2048）个最相关 key，只对它们做 attention。压缩"<b>对哪些 token 算</b>"。</p>
+<p class="avoid">避免：sparse attention（太泛）、NSA（那是另一种 indexer 设计）</p></div>
+
+<div class="term"><b>IndexShare</b>
+<p class="def">GLM-5.2 的算法增量：DSA 的 index 不再每层重算，而是每 <code>index_topk_freq</code>（=4）层算一次、中间层复用。压缩"<b>多久重选一次 token</b>"，与 DSA 正交。1M context 下省 2.9× attention FLOPs。论文 arXiv:2603.12201 IndexCache。</p>
+<p class="avoid">避免：index reuse（口语化）、cross-layer attention（那是共享 attention 输出，不是 index）</p></div>
+
+<div class="term"><b>MLA（Multi-head Latent Attention）</b>
+<p class="def">DeepSeek 风格的注意力：KV 经 low-rank 投影压成 latent（GLM-5.2 <code>kv_lora_rank=512</code>）存进 cache，省显存。GLM-5.2 的 attention 主路径。</p></div>
+
+<div class="term"><b>Indexer（lightning indexer）</b>
+<p class="def">DSA 里选 top-k 的轻量模块：MQA 结构（<code>index_n_heads=32</code> × <code>index_head_dim=128</code>，单头 key），q 来自 q_lora，经 k_norm + RoPE + weights_proj，用 FP8 deep_gemm 算 MQA logits 再 topk。便宜地为每 query 打分所有 key。</p></div>
+
+<div class="term"><b>MTP（Multi-Token Prediction）</b>
+<p class="def">单 nextn draft 层（GLM-5.2 layer 78），用于 speculative decoding。GLM-5.2 acceptance length +20%。上游 SGLang 把它改名复用 DeepSeek 的 <code>DeepseekV3ForCausalLMNextN</code>。</p></div>
+
+<div class="term"><b>first_k_dense_replace</b>
+<p class="def">前 K 层用 dense FFN 而非 MoE（GLM-5.2=3，即 layer 0–2 dense）。保浅层 representation 质量。</p></div>
+
+<h2>SGLang 实现</h2>
+
+<div class="term"><b>能力探测（capability-driven）</b>
+<p class="def">框架靠 config 字段（如 <code>index_topk is not None</code>）而非架构名身份决定走哪条路径。GLM-5.2 day-0 能"零新文件"的根因。对立面是<b>身份驱动（identity-driven）</b>的 <code>if arch=="GLM"</code>。</p></div>
+
+<div class="term"><b>is_deepseek_dsa()</b>
+<p class="def">上游的能力探测函数（<code>model_config.py:103</code>）：架构名进白名单 set 且有 <code>index_topk</code> → 打开 <code>use_dsa</code> + Indexer + dsa 后端。GLM 的"接入"=往这个 set 加一个字符串。</p></div>
+
+<div class="term"><b>skip_topk / next_skip_topk</b>
+<p class="def">每层在 <code>__init__</code> 算好的布尔（<code>deepseek_v2.py:1604</code>）。<code>skip_topk</code>=本层不跑 indexer、复用上层 index；<code>next_skip_topk</code>=本层 index 要传给下层。IndexShare 的层级开关。</p></div>
+
+<div class="term"><b>prev_topk_indices</b>
+<p class="def">IndexShare 层间传递的载体：层循环的局部变量 <code>topk_indices</code>，作为参数一层层下传（<code>deepseek_v2.py:2495</code>）。<b>不是</b>全局 cache，生命周期=一次 forward。</p>
+<p class="avoid">避免：index cache（上游没有缓存对象）</p></div>
+
+<div class="term"><b>dsa 后端</b>
+<p class="def">DSA 的 attention backend（<code>DeepseekSparseAttnBackend</code>）。<code>is_deepseek_dsa</code> 为真时 server_args 自动选。<code>nsa</code> 是其已废弃别名（直接转发）。</p>
+<p class="avoid">避免：nsa backend（已弃用名）</p></div>
+
+<div class="term"><b>EntryClass</b>
+<p class="def">SGLang 模型注册约定：模块导出 <code>EntryClass=[...]</code>，<code>ModelRegistry</code> 扫描登记，用 <code>architectures[0]</code> 字符串查表。GLM 挂在 <code>glm4_moe.py:1486</code>。</p></div>
+
+<div class="term"><b>index_share_for_mtp_iteration</b>
+<p class="def">第二条复用通道（时间维度）：speculative draft 各 step 间复用 base 的 index，载体是 <code>forward_batch.topk_indices</code> 字段。仅 <code>topk==1</code>（否则 tree 重排 desync）。</p></div>
+
+<div class="footer">术语表 · 与课 01/02 及两张参考卡保持一致 · 随理解深化在原处修订</div>
+
+</body>
+</html>

@@ -1,0 +1,31 @@
+{
+  "title": "GLM-5.2 模型架构与 SGLang Day-0 适配",
+  "lessons": [
+    {
+      "title": "GLM-5.2 架构与 IndexShare DSA 之上的跨层索引复用 —— 你已知 DSA，本课只讲\"增量\"",
+      "path": "lessons/0001-glm52-architecture-indexshare.html"
+    },
+    {
+      "title": "SGLang 物理实现 GLM-5.2 如何\"零新文件\"Day-0 跑起来 —— 社区上游的真实机制与 tricks",
+      "path": "lessons/0002-sglang-day0-enablement.html"
+    },
+    {
+      "title": "附录 A：simulator YAML 语义核对 head_dim、indexer_k_norm、MTP 为什么必须按 HF 权重 + SGLang 实现建模",
+      "path": "lessons/0003-simulator-yaml-dimension-appendix.html"
+    }
+  ],
+  "references": [
+    {
+      "title": "GLM-5.2-FP8 架构维度速查表",
+      "path": "reference/architecture-cheatsheet.html"
+    },
+    {
+      "title": "术语表：GLM-5.2 架构与 SGLang DSA 实现",
+      "path": "reference/glossary.html"
+    },
+    {
+      "title": "GLM-5.2 上游 SGLang Day-0 机制拆解",
+      "path": "reference/sglang-day0-checklist.html"
+    }
+  ]
+}

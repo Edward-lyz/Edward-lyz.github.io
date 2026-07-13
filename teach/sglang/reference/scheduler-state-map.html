@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SGLang Scheduler State Map</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<h1>SGLang Scheduler State Map</h1>
+<p class="outcome">用一页定位 normal Scheduler 的持久状态、每轮状态与关键转移。</p>
+
+<h2>持久容器</h2>
+<table>
+<thead><tr><th>状态</th><th>内容</th><th>主要写入点</th></tr></thead>
+<tbody>
+<tr><td><code>waiting_queue</code></td><td>已初始化、等待 admission 的 <code>Req</code></td><td><code>_add_request_to_queue</code></td></tr>
+<tr><td><code>running_batch</code></td><td>可继续 decode 的 requests</td><td><code>get_next_batch_to_run</code></td></tr>
+<tr><td><code>last_batch</code></td><td>上一轮刚执行的 batch</td><td>event loop 尾部</td></tr>
+<tr><td><code>result_queue</code></td><td>Overlap 下已 forward、尚未完成 CPU result processing 的 batch 副本与结果</td><td><code>event_loop_overlap</code></td></tr>
+<tr><td><code>chunked_req</code></td><td>prompt 尚未完成的跨轮 request</td><td><code>PrefillAdder</code></td></tr>
+<tr><td><code>tree_cache</code></td><td>canonical prefix 与 KV ownership</td><td>match/cache/evict</td></tr>
+<tr><td><code>Req</code></td><td>跨轮请求语义、输出与 KV frontier</td><td>intake/result/retract</td></tr>
+</tbody>
+</table>
+
+<h2>Normal loop</h2>
+<pre><code>recv_requests
+→ process_input_requests
+→ get_next_batch_to_run
+   1. stash unfinished chunk
+   2. merge completed last EXTEND into running
+   3. try get_new_batch_prefill
+   4. else update_running_batch for DECODE
+   5. adapt DPA/IDLE metadata
+→ run_batch
+→ process_batch_result
+→ last_batch = batch</code></pre>
+
+<h2>Request transition table</h2>
+<table>
+<thead><tr><th>From</th><th>Condition</th><th>To</th><th>KV action</th></tr></thead>
+<tbody>
+<tr><td>IPC</td><td>request accepted</td><td>waiting</td><td>prefix match metadata prepared</td></tr>
+<tr><td>waiting</td><td>admission passes</td><td>EXTEND</td><td>row + new slots allocated</td></tr>
+<tr><td>EXTEND</td><td>chunk incomplete</td><td>chunked</td><td>stash canonical chunk</td></tr>
+<tr><td>EXTEND</td><td>prompt complete</td><td>running</td><td>row/slots retained</td></tr>
+<tr><td>running</td><td>decode capacity passes</td><td>DECODE</td><td>one slot/request allocated</td></tr>
+<tr><td>running</td><td>capacity fails after eviction</td><td>retracted</td><td>private KV released immediately</td></tr>
+<tr><td>retracted</td><td>requeued</td><td>waiting</td><td>later rematch/recompute</td></tr>
+<tr><td>running</td><td>finish/abort</td><td>done</td><td>tree ownership transfer or free</td></tr>
+</tbody>
+</table>
+
+<h2>选批的三层决策</h2>
+<pre><code>SchedulePolicy: waiting queue 先看谁
+→ PrefillAdder: 当前谁能被 admission
+→ allocator/tree: 承诺的 free + evictable 能否兑现</code></pre>
+<p><code>lpm</code>、<code>dfs-weight</code> 等 policy 不绕过 capacity。<code>mem_fraction_static</code> 决定启动期池上限，<code>new_token_ratio</code> 只调整池内 future reservation。</p>
+
+<h2>源码锚点</h2>
+<table>
+<thead><tr><th>动作</th><th>v0.5.15</th></tr></thead>
+<tbody>
+<tr><td>normal loop</td><td><code>scheduler.py:1533 event_loop_normal</code></td></tr>
+<tr><td>intake</td><td><code>scheduler.py:1664 process_input_requests</code></td></tr>
+<tr><td>request construction</td><td><code>scheduler.py:2034 handle_generate_request</code></td></tr>
+<tr><td>queue</td><td><code>scheduler.py:2300 _add_request_to_queue</code></td></tr>
+<tr><td>batch selection</td><td><code>scheduler.py:2598 get_next_batch_to_run</code></td></tr>
+<tr><td>prefill</td><td><code>scheduler.py:2733 get_new_batch_prefill</code></td></tr>
+<tr><td>decode update</td><td><code>scheduler.py:3041 update_running_batch</code></td></tr>
+<tr><td>forward</td><td><code>scheduler.py:3191 run_batch</code></td></tr>
+<tr><td>result</td><td><code>scheduler.py:3449 process_batch_result</code></td></tr>
+</tbody>
+</table>
+</body>
+</html>

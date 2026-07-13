@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SGLang Runtime Glossary</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+<h1>SGLang Runtime Glossary</h1>
+<p class="outcome">课程统一使用的术语与 ownership 含义，按首次出现顺序维护。</p>
+
+<table>
+<thead><tr><th>术语</th><th>本课程中的精确定义</th></tr></thead>
+<tbody>
+<tr><td><code>TokenizerManager</code></td><td>HTTP serving 侧的请求入口与 tokenization 管理者，通过 IPC 把 tokenized request 交给 Scheduler。</td></tr>
+<tr><td><code>Scheduler</code></td><td>每个模型并行 rank 中负责 request 状态、batch 构造、KV 资源决策和调用 Model Worker 的对象。</td></tr>
+<tr><td><code>Req</code></td><td>Scheduler 内部持有的单请求状态，跨多次 forward 存活。</td></tr>
+<tr><td><code>ScheduleBatch</code></td><td>一次模型 forward 的调度结果，包含本轮参与执行的 request 与所需 metadata。</td></tr>
+<tr><td><code>extend</code></td><td>为一个或多个尚未计算 KV 的 token 执行 forward；prefill 是最常见的 extend。</td></tr>
+<tr><td><code>decode</code></td><td>通常为每个活跃 request 追加一个 token 的 forward 阶段。</td></tr>
+<tr><td><code>tp_rank</code></td><td>Tensor Parallel group 内的 rank。默认路径为每个 TP rank 启动一个 Scheduler process。</td></tr>
+<tr><td><code>rank 0 IPC</code></td><td>模型并行组中负责从 TokenizerManager 接收请求、向输出侧发送结果的 leader 路径。</td></tr>
+<tr><td><code>ownership</code></td><td>某个进程或 rank 对请求状态、参数 shard、KV 数据或通信动作负有实际读写责任。</td></tr>
+<tr><td><code>waiting_queue</code></td><td>已经成为内部 <code>Req</code>、但尚未通过本轮 admission 的请求容器。</td></tr>
+<tr><td><code>running_batch</code></td><td>已经完成 prompt KV、可以继续 decode 的 requests 集合。</td></tr>
+<tr><td><code>last_batch</code></td><td>上一轮刚执行的 <code>ScheduleBatch</code>；下一轮选批用它完成跨轮状态转移。</td></tr>
+<tr><td><code>result_queue</code></td><td>Overlap Scheduler 中保存已完成当前 forward、但尚待 CPU result processing 的 batch 副本与结果。</td></tr>
+<tr><td><code>PrefillAdder</code></td><td>依据 KV lifetime、当前输入、chunk 与 request slot 预算逐个接纳 waiting requests 的 policy helper。</td></tr>
+<tr><td><code>new_token_ratio</code></td><td>Scheduler 对 running requests 剩余生成长度的动态估计比例，用于池内 future reservation，不改变 KV pool 物理上限。</td></tr>
+<tr><td><code>retraction</code></td><td>Decode KV 不足时释放部分 running request 的 private KV，并把同一逻辑请求重新排队。</td></tr>
+<tr><td><code>ReqToTokenPool</code></td><td>二维页表；row 是 request slot，column 是逻辑 sequence position，value 是 physical KV slot。</td></tr>
+<tr><td><code>TokenToKVPoolAllocator</code></td><td>分配与释放 physical KV slots/pages 的 allocator。</td></tr>
+<tr><td><code>out_cache_loc</code></td><td>Scheduler/allocator 交给 attention backend 的本轮新 KV destination slots。</td></tr>
+<tr><td><code>canonical KV</code></td><td>由 Radix Tree 持有、可被相同 prefix requests 共享的一组 physical KV slots。</td></tr>
+<tr><td><code>evictable</code></td><td>由 prefix tree 持有、但当前 <code>lock_ref=0</code>，可先驱逐再用于 allocation 的 KV。</td></tr>
+<tr><td><code>protected</code></td><td>位于活跃 request prefix path 上、<code>lock_ref&gt;0</code>，不可驱逐的 KV。</td></tr>
+<tr><td><code>DP Attention</code></td><td>在一个 TP world 内让各 attention DP rank 独立拥有 requests/KV 并执行局部 attention，MLP 仍跨原 model world 协作。</td></tr>
+<tr><td><code>IDLE batch</code></td><td>DPA rank 没有 local tokens 时构造的零工作 batch，用于保持跨-rank MLP collective 顺序一致。</td></tr>
+<tr><td><code>Expert Parallel</code></td><td>把 routed expert weights 分散到多个 EP ranks，并把 token activation 路由到 expert owner。</td></tr>
+<tr><td><code>DeepEP dispatch</code></td><td>根据 TopK destination layout，把 token activation all-to-all 到 expert owners。</td></tr>
+<tr><td><code>DeepEP combine</code></td><td>把 local expert 输出送回 source token，恢复 token order 并组合 top-k 结果。</td></tr>
+<tr><td><code>MoE Dispatcher</code></td><td>负责 token dispatch/combine、跨 rank 通信与 layout 的 MoE 层组件。</td></tr>
+<tr><td><code>MoE Runner</code></td><td>负责本 rank local experts grouped GEMM 与 quantized compute 的 MoE 层组件。</td></tr>
+<tr><td><code>HiCache</code></td><td>在同一 Radix prefix namespace 上扩展 GPU L1、host L2 与 external storage L3 residency 和 transfer 生命周期。</td></tr>
+<tr><td><code>PD disaggregation</code></td><td>由 Prefill instance 计算 prompt KV、Decode instance 预分配目的 slots 并接收 KV 后继续生成的部署模式。</td></tr>
+<tr><td><code>PREBUILT</code></td><td>PD Decode 侧在真实 KV 已传输到本地 pool 后，用于重建 Scheduler metadata 而不重跑 prompt 的 forward mode。</td></tr>
+</tbody>
+</table>
+
+</body>
+</html>

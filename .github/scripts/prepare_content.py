@@ -226,7 +226,8 @@ def write_public_assets(repo_root: Path, dest_dir: Path) -> None:
             shutil.copy2(child, target)
 
     (public_dir / "robots.txt").write_text(
-        f"User-agent: *\nAllow: /\nSitemap: {SITE_URL}sitemap.xml\n",
+        f"User-agent: *\nAllow: /\nSitemap: {SITE_URL}sitemap.xml\n"
+        f"Sitemap: {SITE_URL}teach-sitemap.xml\n",
         encoding="utf-8",
     )
     (public_dir / ".nojekyll").write_text("", encoding="utf-8")
@@ -242,6 +243,7 @@ def write_teach_content(repo_root: Path, dest_dir: Path) -> None:
         raise SystemExit("Teach publication folder 'teach' not found.")
 
     course_sections: list[tuple[str, str, list[tuple[str, str, str]]]] = []
+    published_hrefs: list[str] = []
     for workspace in sorted(teach_root.iterdir()):
         if not workspace.is_dir() or workspace.name.startswith("."):
             continue
@@ -272,7 +274,9 @@ def write_teach_content(repo_root: Path, dest_dir: Path) -> None:
                 if not (workspace / relative_path).is_file():
                     raise SystemExit(f"Teach manifest target not found: {workspace / relative_path}")
                 route = (Path("teach") / workspace.name / relative_path).as_posix()
-                links.append((title, "/" + quote(route, safe="/"), label))
+                href = "/" + quote(route, safe="/")
+                links.append((title, href, label))
+                published_hrefs.append(href)
 
         if not any(label == "课程" for _, _, label in links):
             raise SystemExit(f"Teach course has no lessons: {manifest_path}")
@@ -314,6 +318,18 @@ def write_teach_content(repo_root: Path, dest_dir: Path) -> None:
     teach_page = dest_dir / "teach"
     teach_page.mkdir(parents=True, exist_ok=True)
     (teach_page / "index.md").write_text("\n".join(lines), encoding="utf-8")
+
+    sitemap_lines = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+    ]
+    for href in published_hrefs:
+        sitemap_lines.append(f"  <url><loc>{html.escape(SITE_URL.rstrip('/') + href)}</loc></url>")
+    sitemap_lines.extend(["</urlset>", ""])
+    (dest_dir / "public" / "teach-sitemap.xml").write_text(
+        "\n".join(sitemap_lines),
+        encoding="utf-8",
+    )
 
 
 def main() -> None:

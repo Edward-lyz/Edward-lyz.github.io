@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 05 — GRPO: 不需要 Critic 的 RL</title>
+<link rel="stylesheet" href="../assets/rl-course.css">
+<script src="../assets/quiz.js" defer></script>
+</head>
+<body>
+
+<p class="lesson-number">Lesson 05</p>
+<h1>GRPO：不需要 Critic 的 RL</h1>
+<p class="subtitle">Group Relative Policy Optimization — 用组内对比替代 Value 网络</p>
+
+<!-- ====== SECTION 1 ====== -->
+<h2>1. PPO 的负担</h2>
+
+<p>回顾 PPO 的 advantage 计算：</p>
+
+<div class="math-block">
+A<sub>t</sub> = Q(s<sub>t</sub>, a<sub>t</sub>) − V(s<sub>t</sub>)
+</div>
+
+<p>需要一个 Critic 网络来估计 V(s)。对大型 LLM 来说，这意味着：</p>
+
+<ul>
+<li>额外一个和 Actor 差不多大的模型</li>
+<li>训练 Critic 本身可能不稳定</li>
+<li>Critic 不准 → advantage 不准 → 训练方向错误</li>
+</ul>
+
+<p><strong>GRPO 的问题</strong>：能不能完全不训练 Critic，直接从 rollout 中获得 advantage？</p>
+
+<!-- ====== SECTION 2 ====== -->
+<h2>2. 核心思想：组内对比</h2>
+
+<p>对同一个 prompt x，生成 G 条 rollout：</p>
+
+<div class="math-block">
+y₁, y₂, ..., y<sub>G</sub> ← 全部由当前策略 π<sub>θ</sub> 对 prompt x 生成
+</div>
+
+<p>每条的 reward：</p>
+
+<div class="math-block">
+r₁, r₂, ..., r<sub>G</sub>
+</div>
+
+<p>计算组内均值和标准差：</p>
+
+<div class="math-block">
+r̄ = (1/G) Σ r<sub>i</sub> , σ = std(r₁,...,r<sub>G</sub>)
+</div>
+
+<p>每条 rollout 的 advantage：</p>
+
+<div class="math-block" style="border: 2px solid var(--accent); background: #fff8f8;">
+Â<sub>i</sub> = (r<sub>i</sub> − r̄) / (σ + ε)
+</div>
+
+<div class="key-insight">
+<p><strong>GRPO 的 baseline 不是学出来的 V(s)，而是同一批 rollout 的平均 reward。</strong><br><br>
+不需要额外的 Critic 网络。只需要对同一个 prompt 多跑几条，互相对比。</p>
+</div>
+
+<!-- ====== SECTION 3 ====== -->
+<h2>3. 一个数字例子</h2>
+
+<p>Prompt: 「解这道数学题」。生成 4 条 rollout：</p>
+
+<table>
+<tr><th>Rollout</th><th>Reward</th><th>Advantage</th></tr>
+<tr><td>A: 正确解法，简洁</td><td>1</td><td>+1.0</td></tr>
+<tr><td>B: 错误</td><td>0</td><td>−1.0</td></tr>
+<tr><td>C: 错误</td><td>0</td><td>−1.0</td></tr>
+<tr><td>D: 正确解法，冗长</td><td>1</td><td>+1.0</td></tr>
+</table>
+
+<p>均值 r̄ = 0.5，标准差 σ = 0.5。标准化后 advantage 为 ±1.0。</p>
+
+<p>效果：</p>
+<ul>
+<li>A 和 D 中的动作概率被提高</li>
+<li>B 和 C 中的动作概率被降低</li>
+</ul>
+
+<p>关键区别：PPO 用 Critic 判断「这个状态平均能拿多少分」；GRPO 直接用同批 rollout 的实际分数平均值做参考。</p>
+
+<!-- ====== SECTION 4 ====== -->
+<h2>4. GRPO 也用 PPO 的 clip</h2>
+
+<p>GRPO 的 objective 仍然有 clip，和 PPO 结构几乎相同：</p>
+
+<div class="math-block">
+J<sub>GRPO</sub> = E [ min( ρ<sub>t</sub> · Â<sub>i</sub> , clip(ρ<sub>t</sub>, 1−ε, 1+ε) · Â<sub>i</sub> ) ] − β · D<sub>KL</sub>(π<sub>θ</sub> ∥ π<sub>ref</sub>)
+</div>
+
+<p>区别只在于 Â 的来源：</p>
+
+<table>
+<tr><th></th><th>PPO</th><th>GRPO</th></tr>
+<tr><td>Advantage 来源</td><td>Critic 网络估计 V(s)，再算 A = G<sub>t</sub> − V</td><td>组内 reward 均值做 baseline</td></tr>
+<tr><td>需要额外模型</td><td>需要 Critic</td><td>不需要</td></tr>
+<tr><td>Advantage 粒度</td><td>可以做到 token-level</td><td>整条 rollout 一个值（sequence-level）</td></tr>
+<tr><td>clip 机制</td><td>相同</td><td>相同</td></tr>
+</table>
+
+<!-- ====== SECTION 5 ====== -->
+<h2>5. GRPO 的致命弱点</h2>
+
+<p>回到上一课 quiz 暗示的情况：如果同一 prompt 的所有 rollout 都失败了呢？</p>
+
+<pre><code>rewards = [0, 0, 0, 0]
+r̄ = 0, σ = 0
+
+Advantage:
+Â_i = (0 − 0) / (0 + ε) ≈ 0  对所有 i</code></pre>
+
+<div class="key-insight">
+<p><strong>全失败时，GRPO 的 advantage 全部接近零 → 来自任务 reward 的梯度消失。</strong><br><br>
+模型不知道往哪走。KL 正则项可能产生微小更新，但它不会告诉模型正确答案在哪里。</p>
+</div>
+
+<p>对比 SFT：即使模型自己完全做不对，教师轨迹仍然提供明确的逐 token 梯度。这就是为什么纯 RL 在低成功率时会卡住。</p>
+
+<!-- ====== SECTION 6 ====== -->
+<h2>6. 什么时候 GRPO 有效，什么时候不行</h2>
+
+<table>
+<tr><th>场景</th><th>GRPO 表现</th><th>原因</th></tr>
+<tr><td>数学题，模型已有一定成功率</td><td>很好</td><td>同一 prompt 下有对有错，对比信号明确</td></tr>
+<tr><td>简单 coding 问题</td><td>可以</td><td>部分 rollout 能通过测试</td></tr>
+<tr><td>复杂长程 Agent 任务</td><td>困难</td><td>成功率极低，几乎全失败，没有对比信号</td></tr>
+<tr><td>任务耗时极长，rollout 长度差异大</td><td>困难</td><td>不同 rollout 难以对齐比较</td></tr>
+</table>
+
+<!-- ====== SECTION 7 ====== -->
+<h2>7. GLM-5.2 为什么从 GRPO 转向 Critic-based PPO</h2>
+
+<p>GLM-5.2 的 Agent RL 面对的是：</p>
+
+<ul>
+<li>任务运行数小时</li>
+<li>涉及工具调用、代码执行、上下文压缩</li>
+<li>不同 rollout 长度和结构完全不同</li>
+<li>成功率很低</li>
+</ul>
+
+<p>GRPO 在这种场景下的问题：</p>
+
+<ol>
+<li>多数 prompt 全失败 → 没有梯度</li>
+<li>即使有成功，不同 rollout 结构差异太大 → 组内对比不公平</li>
+<li>只有 sequence-level advantage → 长轨迹中无法定位关键动作</li>
+</ol>
+
+<p>GLM-5.2 的解决方案是回到 critic-based PPO：</p>
+
+<ul>
+<li>从<strong>单条</strong> rollout 学习（不需要同一 prompt 下多条成功）</li>
+<li>Critic 提供 <strong>token-level</strong> advantage（定位关键动作）</li>
+<li>处理 compacted sub-traces 的长度差异</li>
+</ul>
+
+<div class="key-insight">
+<p><strong>GRPO 适合短任务、高成功率的场景（如数学题）。<br>
+长程 Agent 任务需要回到 Critic-based PPO，才能从稀疏成功中学习。</strong></p>
+</div>
+
+<!-- ====== SECTION 8 ====== -->
+<h2>8. GRPO vs PPO 的选择逻辑</h2>
+
+<pre><code>if 任务短 and 同一 prompt 能跑出有对有错的 rollout:
+    → GRPO：省掉 Critic 的开销，工程简单
+
+elif 任务长 or 成功率极低 or 需要 token-level 信号:
+    → Critic-based PPO：虽然贵，但能从稀疏成功中榨取信息</code></pre>
+
+<!-- ====== QUIZ ====== -->
+<div class="quiz-container">
+<h3>检验理解 ✍️</h3>
+<p>同一 prompt 生成 8 条 rollout，reward 分别是 [1, 1, 1, 1, 1, 1, 1, 1]（全部成功）。GRPO 的 advantage 是多少？模型能学到什么？</p>
+
+<div class="quiz-option" data-correct="true" data-explanation="正确。所有 r_i = r̄ = 1，所以 (r_i − r̄) = 0。全成功时 GRPO 也学不到东西——没有对比信号。">Advantage 全为零，模型学不到区分好坏的信号</div>
+<div class="quiz-option" data-correct="false" data-explanation="全成功不代表 advantage 为正。advantage 是相对值，全部一样时差为零。">Advantage 全为正，会均匀增强所有动作的概率</div>
+<div class="quiz-option" data-correct="false" data-explanation="成功率已经 100% 不代表策略不更新——问题是 GRPO 机制上无法提供信号。">不需要学习了，因为已经全部成功，策略已最优</div>
+<div class="quiz-option" data-correct="false" data-explanation="KL 正则项不依赖 reward 对比，它只惩罚偏离参考策略。但来自 reward 的学习信号确实为零。">会通过 KL 项产生有意义的更新方向</div>
+
+<div class="quiz-feedback"></div>
+</div>
+
+<!-- ====== SECTION 9 ====== -->
+<h2>9. 本课小结</h2>
+
+<ol>
+<li><strong>GRPO</strong> = 用组内 reward 均值替代 Critic 作为 baseline</li>
+<li><strong>优点</strong>：不需要 Critic，工程简单，短任务效果好</li>
+<li><strong>弱点</strong>：全失败或全成功时梯度为零；只有 sequence-level advantage</li>
+<li><strong>GLM-5.2 转向 PPO</strong>：长程 Agent 任务需要 token-level 信号和单条 rollout 学习能力</li>
+<li><strong>选择标准</strong>：成功率和任务复杂度决定用 GRPO 还是 PPO</li>
+</ol>
+
+<p>下一课：冷启动、蒸馏与 RL 的因果关系——把前五课串成完整图景。</p>
+
+<h2>推荐阅读</h2>
+<p><a href="https://arxiv.org/html/2402.03300v3">DeepSeekMath (2024)</a> Section 3.2 是 GRPO 的首次正式描述，只有 2 页，非常清晰。</p>
+
+<div class="ask-teacher">
+<strong>💬 有疑问？</strong> GRPO 和 PPO 的关系可以用更多对比例子展开。或者如果「全失败时梯度为零」不够直觉，告诉我。
+</div>
+
+<div class="nav-links">
+<a href="0004-ppo.html">← 上一课：PPO</a>
+<a href="0006-cold-start-and-distillation.html">下一课：冷启动与蒸馏 →</a>
+</div>
+
+</body>
+</html>

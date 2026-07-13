@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第四课：Chunked prefill 与 retraction</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script defer src="../assets/quiz.js"></script>
+</head>
+<body>
+<h1>Chunked prefill 与 retraction</h1>
+<p class="outcome">学完本课，你能区分 chunked prefill 的主动切片与 decode retraction 的内存恢复，并追踪二者如何回到 waiting side。</p>
+
+<h2>两种机制解决两个不同问题</h2>
+<table>
+<thead><tr><th>机制</th><th>触发时机</th><th>目的</th><th>KV 后果</th></tr></thead>
+<tbody>
+<tr><td>Chunked prefill</td><td>admission 时 prompt 超过 chunk budget</td><td>限制单轮 prefill，避免长 prompt 长时间阻塞</td><td>已算 chunk 被 cache，request row 可复用</td></tr>
+<tr><td>Decode retraction</td><td>下一轮 decode KV 不足</td><td>立刻回收正在运行 request 的空间</td><td>释放 KV，不把临时状态插入 Radix Tree</td></tr>
+</tbody>
+</table>
+<p>前者是计划内的工作分片，后者是压力下的 preemption。把 retraction 叫作 chunking 会掩盖一次昂贵的重算。</p>
+
+<h2>Chunked request 跨轮怎样存活</h2>
+<pre><code>waiting request: fill_len = 10,000
+chunk budget: 2,048
+
+round 1: extend [0, 2048)   → stash/cache this chunk
+round 2: extend [2048,4096) → stash/cache this chunk
+...
+last round: complete extend  → merge into running decode</code></pre>
+<p><code>PrefillAdder.add_chunked_req</code> 设置本轮 <code>extend_range</code>；若 truncated，就把同一个 <code>Req</code> 保存在 <code>chunked_req</code>。下一轮选批开头，它从上一批的 merge 集合中被排除，刚产生的 KV 通过 <code>stash_chunked_request</code> 缓存，再初始化下一段。这样未完成 prompt 不会被误当成可 decode request。<span class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/managers/schedule_policy.py#L730-L790">schedule_policy.py:730-790</a> 与 <a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/managers/scheduler.py#L2610-L2675">scheduler.py:2610-2675</a>。</span></p>
+
+<h2>Decode 先驱逐 cache，再 retract requests</h2>
+<p><code>update_running_batch</code> 先过滤 finished requests，然后调用 <code>check_decode_mem</code>。后者先尝试从 Radix Cache 驱逐未锁定节点；若 physical slots 仍不足，才进入 <code>retract_decode</code>。</p>
+<pre><code>filter finished
+→ estimate next-decode allocation
+→ evict unlocked radix leaves
+→ enough? decode
+→ not enough? retract selected requests
+→ release their request row + KV immediately
+→ requeue as retracted
+→ recompute future-token ratio</code></pre>
+<p>选择策略在非 speculative path 中会参考已生成长度和 prompt 长度。循环至少保留一个 request；但若最后一个 request 仍不能 forward，v0.5.15 会明确 abort 它并返回错误，而不是静默换成另一种执行语义。<span class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/managers/scheduler.py#L3041-L3124">scheduler.py:3041-3124</a> 与 <a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/managers/schedule_batch.py#L2470-L2550">schedule_batch.py:2470-2550</a>。</span></p>
+
+<div class="invariant"><strong>Retract 的代价不是一次 queue move</strong>逻辑输出历史仍在，但其 physical KV 被释放。再次 admission 时要重新 match cache，并可能重算未进入共享树的部分。指标应同时看 retraction 次数、重算 token 与 tail latency。</div>
+
+<h2>Retract 会把 physical frontier 归零</h2>
+
+<p><code>reset_for_retract</code> 保留 rid、输入、已生成输出和 sampling 语义，但把 <code>prefix_indices</code>、<code>last_node</code>、request row 关联以及 committed/allocated KV frontiers 清零，并永久标记 <code>retracted_stain</code>。再次进入 admission 时，它必须重新 match 当前 tree；能复用多少取决于那一刻仍在 tree 中的 canonical prefix，不等于 retract 前曾经计算过多少。</p>
+
+<pre><code>logical state kept:   input ids + output ids + finish policy + rid
+physical state reset: req row + private KV + prefix lock + KV frontiers
+next cost:            fill length - newly matched canonical prefix</code></pre>
+
+<p>这解释了 retraction amplification：一次撤回不仅让当前 decode 少一个 request，还可能把大量 private decode history 变成后续 extend 重算。优化目标应是减少 reprocessed tokens，而不只是减少日志中的 retract request count。<span class="source-note">依据：<a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/managers/schedule_batch.py#L1438-L1471">schedule_batch.py:1438-1471</a> 与 <a href="https://github.com/sgl-project/sglang/blob/v0.5.15/python/sglang/srt/managers/schedule_batch.py#L1590-L1620">schedule_batch.py:1590-1620</a>。</span></p>
+
+<h2>故障定位模板</h2>
+<ol>
+<li>若 TTFT 出现周期性尖峰，先检查 chunk size 与 prefill/decode 交错。</li>
+<li>若 ITL 与吞吐同时抖动，检查 <code>KV cache pool is full. Retract requests</code> 日志。</li>
+<li>若 available 很低但 retraction 不发生，检查可驱逐 cache 是否先释放了足够空间。</li>
+<li>若同一 request 多次 retracted，检查 <code>max_running_requests</code>、<code>max_new_tokens</code> 分布与 admission reserve，而不是只增大 chunk。</li>
+</ol>
+
+<h2>最小自检</h2>
+<div class="quiz" data-answer="4">
+<h3>Decode 的下一步 KV allocation 不足时，标准恢复顺序是什么？</h3>
+<label><input type="radio" name="q4" value="1">重启、驱逐、重排</label>
+<label><input type="radio" name="q4" value="2">切块、重算、继续</label>
+<label><input type="radio" name="q4" value="3">重排、扩容、降级</label>
+<label><input type="radio" name="q4" value="4">驱逐、撤回、重排</label>
+<div class="feedback correct" aria-live="polite">正确。先驱逐未锁定 Radix leaves；仍不足才 retract requests；被撤回的 request 释放 KV 后重新排队。</div>
+<div class="feedback incorrect" aria-live="polite">不对。标准路径先回收 evictable prefix cache，再撤回 running requests，最后把撤回请求重新放回 queue。</div>
+</div>
+</body>
+</html>

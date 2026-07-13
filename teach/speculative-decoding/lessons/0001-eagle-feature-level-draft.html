@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 01: EAGLE — Feature-Level Autoregressive Draft</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+  onload="renderMathInElement(document.body, {delimiters:[{left:'\\[',right:'\\]',display:true},{left:'\\(',right:'\\)',display:false}]})"></script>
+<script defer src="../assets/quiz.js"></script>
+</head>
+<body>
+
+<h1>EAGLE：Feature-Level Autoregressive Draft</h1>
+
+<p class="lesson-meta">
+<strong>前置阅读</strong>：<a href="../reference/glossary.html">术语表</a> ·
+<strong>主要参考</strong>：<a href="https://arxiv.org/abs/2401.15077">EAGLE: Speculative Sampling Requires Rethinking Feature Uncertainty (Li et al., ICML 2024)</a>
+</p>
+
+<!-- ═══════════ 一图流 ═══════════ -->
+<h2>一图流：EAGLE Draft + Verify</h2>
+
+<iframe src="../assets/eagle-animation.html" title="EAGLE 一轮解码动画" style="width:100%; aspect-ratio:5/4; border:1px solid #333; border-radius:8px;" loading="lazy"></iframe>
+
+<!-- ═══════════ 背景 ═══════════ -->
+<h2>1. 背景：Token-Level vs Feature-Level Draft</h2>
+
+<h3>1.1 传统投机解码的局限</h3>
+
+<p>标准 speculative decoding（Leviathan 2023, Chen 2023）要求 draft model 是一个独立的语言模型——它从 token 空间到 token 空间做 autoregressive generation：</p>
+
+<div class="math-block">
+<span class="label">传统 draft：token → token</span>
+\[\hat{x}_{k+1} \sim p^d(\cdot \mid x_1, \ldots, x_k)\]
+</div>
+
+<p>问题在于：要让 draft model 足够准，它需要足够大（参数多、层数深）。但 draft model 越大，\(T_{\text{draft}}\) 越高，per-token latency 收益缩小。这是一个根本矛盾。</p>
+
+<h3>1.2 EAGLE 的核心观察</h3>
+
+<p>EAGLE 论文的关键 insight 来自一个实验发现：</p>
+
+<div class="key-insight">
+<strong>Token 序列是高度不确定的</strong>（因为 sampling 的随机性），但 target model 最后一层的 hidden state 序列要确定得多。<br><br>
+即：给定 context，next token 可能有多种选择（entropy 高），但不管选了哪个 token，target model 对应的 hidden state 变化相对平滑。<br><br>
+因此：<strong>在 feature space（hidden state 空间）做 autoregressive 预测</strong>比在 token space 做要容易得多。
+</div>
+
+<p>形式化表述：设 target model 第 \(L\) 层输出的 hidden state 序列为 \(\mathbf{f}_1, \mathbf{f}_2, \ldots\)，EAGLE 观察到：</p>
+
+<div class="math-block">
+<span class="label">Feature 的自相关性远高于 token</span>
+\[H(\mathbf{f}_{k+1} \mid \mathbf{f}_1, \ldots, \mathbf{f}_k) \ll H(x_{k+1} \mid x_1, \ldots, x_k)\]
+</div>
+
+<p>这意味着：用一个轻量网络预测下一步的 hidden state，精度远高于直接预测下一步的 token。</p>
+
+<!-- ═══════════ 创新点 ═══════════ -->
+<h2>2. 创新点：Feature-Level Autoregression</h2>
+
+<h3>2.1 架构设计</h3>
+
+<p>EAGLE 的 draft model 不是一个独立的语言模型，而是<strong>嫁接在 target model 之上的轻量 head</strong>：</p>
+
+<table>
+<tr><th>组件</th><th>输入</th><th>输出</th><th>参数规模</th></tr>
+<tr><td>Fusion Layer</td><td>target hidden state \(\mathbf{f}_k\) + token embedding \(\mathbf{e}(x_k)\)</td><td>融合特征 \(\mathbf{h}_k\)</td><td>1 个 Linear</td></tr>
+<tr><td>Draft Decoder</td><td>\(\mathbf{h}_k\)（autoregressive）</td><td>预测的下一步特征 \(\hat{\mathbf{f}}_{k+1}\)</td><td>1 层 Transformer decoder</td></tr>
+<tr><td>LM Head（共享）</td><td>\(\hat{\mathbf{f}}_{k+1}\)</td><td>token 分布 \(p^d_{k+1}\)</td><td>复用 target 的 LM head</td></tr>
+</table>
+
+<h3>2.2 为什么需要 token embedding 拼接？</h3>
+
+<p>如果只用 \(\mathbf{f}_k\) 做预测，存在信息损失。原因是：</p>
+
+<ul>
+<li>\(\mathbf{f}_k\) 是 target model 在 position k 的 hidden state，它编码了「给定 context，position k 的 token 分布」</li>
+<li>但在 speculative decoding 中，position k 的 token \(x_k\) 已经被<strong>采样</strong>了</li>
+<li>采样结果 \(x_k\) 包含了「从 \(\mathbf{f}_k\) 蕴含的分布中具体选了哪个」的信息——这是 \(\mathbf{f}_k\) 本身不包含的</li>
+</ul>
+
+<p>所以 EAGLE 将两者拼接后投影：</p>
+
+<div class="math-block">
+<span class="label">Fusion：把采样结果注入 feature</span>
+\[\mathbf{h}_k = W_{\text{fuse}} \cdot [\mathbf{f}_k;\; \mathbf{e}(x_k)] + b_{\text{fuse}}\]
+</div>
+
+<p>其中 \([\cdot;\cdot]\) 表示 concat，\(\mathbf{e}(x_k)\) 是 token \(x_k\) 的 embedding（复用 target model 的 embedding table）。</p>
+
+<!-- ═══════════ 公式推导 ═══════════ -->
+<h2>3. 公式推导</h2>
+
+<h3>3.1 一步 draft 的完整数据流</h3>
+
+<p>假设已知到 position k 为止的 target hidden states 和 token：\((\mathbf{f}_k, x_k)\)。</p>
+
+<div class="derivation">
+<div class="step">
+<span class="step-label">Step 1：Fusion — 将 hidden state 和实际采样 token 融合</span>
+\[\mathbf{h}_k = W_{\text{fuse}} \cdot [\mathbf{f}_k;\; \mathbf{e}(x_k)] \in \mathbb{R}^d\]
+<p>将 \(2d\) 维输入投影回 \(d\) 维。\(\mathbf{f}_k \in \mathbb{R}^d\) 来自 target model 最后一层，\(\mathbf{e}(x_k) \in \mathbb{R}^d\) 是 token embedding。</p>
+</div>
+
+<div class="step">
+<span class="step-label">Step 2：Draft Decoder — 一层 Transformer 前传</span>
+\[\hat{\mathbf{f}}_{k+1} = \text{TransformerLayer}(\mathbf{h}_k;\; \mathbf{h}_{<k})\]
+<p>这一层的 KV cache 包含之前所有步的 \(\mathbf{h}\)，所以它能做 causal attention。输出 \(\hat{\mathbf{f}}_{k+1}\) 是对 target model 下一步 hidden state 的预测。</p>
+</div>
+
+<div class="step">
+<span class="step-label">Step 3：LM Head — 从 feature space 映射到 token 分布</span>
+\[p^d_{k+1}(v) = \text{softmax}(W_{\text{lm}} \cdot \hat{\mathbf{f}}_{k+1})[v]\]
+<p>\(W_{\text{lm}}\) 直接复用 target model 的 LM head 权重（frozen），无需额外参数。</p>
+</div>
+
+<div class="step">
+<span class="step-label">Step 4：采样 — 得到 draft token</span>
+\[\hat{x}_{k+1} \sim p^d_{k+1}(\cdot)\]
+<p>采样后，\(\hat{x}_{k+1}\) 成为下一步 fusion 的输入之一。但注意：真正的 \(\mathbf{f}_{k+1}\) 不可用（那需要完整 target 前传），所以 EAGLE 用 \(\hat{\mathbf{f}}_{k+1}\) 代替。</p>
+</div>
+</div>
+
+<h3>3.2 多步 draft 的递推</h3>
+
+<p>生成 \(\gamma\) 个 draft token 时，后续步骤必须用自己预测的 feature 做输入——这产生了误差累积：</p>
+
+<div class="derivation">
+<div class="step">
+<span class="step-label">Step 1 (k=1)：用真实的 \(\mathbf{f}_0, x_0\) 启动</span>
+\[\mathbf{h}_0 = W_{\text{fuse}} \cdot [\mathbf{f}_0;\; \mathbf{e}(x_0)]\]
+\[\hat{\mathbf{f}}_1 = \text{Decoder}(\mathbf{h}_0)\]
+\[\hat{x}_1 \sim \text{softmax}(W_{\text{lm}} \cdot \hat{\mathbf{f}}_1)\]
+<p>\(\mathbf{f}_0\) 是 anchor token 的真实 target hidden state，精度最高。</p>
+</div>
+
+<div class="step">
+<span class="step-label">Step 2 (k=2)：用预测的 \(\hat{\mathbf{f}}_1\) 继续</span>
+\[\mathbf{h}_1 = W_{\text{fuse}} \cdot [\hat{\mathbf{f}}_1;\; \mathbf{e}(\hat{x}_1)]\]
+\[\hat{\mathbf{f}}_2 = \text{Decoder}(\mathbf{h}_1;\; \mathbf{h}_0)\]
+\[\hat{x}_2 \sim \text{softmax}(W_{\text{lm}} \cdot \hat{\mathbf{f}}_2)\]
+<p>从此步开始，输入的 feature 是上一步的预测值，不是真值。误差开始累积。</p>
+</div>
+
+<div class="step">
+<span class="step-label">一般情况 (k=j)：递推</span>
+\[\mathbf{h}_{j-1} = W_{\text{fuse}} \cdot [\hat{\mathbf{f}}_{j-1};\; \mathbf{e}(\hat{x}_{j-1})]\]
+\[\hat{\mathbf{f}}_j = \text{Decoder}(\mathbf{h}_{j-1};\; \mathbf{h}_{<j-1})\]
+\[\hat{x}_j \sim \text{softmax}(W_{\text{lm}} \cdot \hat{\mathbf{f}}_j)\]
+<p>第 \(j\) 步的预测精度受前面所有步累积误差影响。这是 autoregressive drafter 的固有代价。</p>
+</div>
+</div>
+
+<h3>3.3 训练目标</h3>
+
+<p>EAGLE 的训练极其简单——直接用 target model 的真实 next-token 做 hard label cross-entropy：</p>
+
+<div class="math-block">
+<span class="label">Training loss</span>
+\[\mathcal{L} = -\sum_{k=1}^{\gamma} \log p^d_k(x_k^*)\]
+</div>
+
+<p>其中 \(x_k^*\) 是 target model 在该位置的真实 next token。训练时使用 teacher forcing（输入的是真实 \(\mathbf{f}_k\)，不是预测值），避免 exposure bias 导致训练不稳定。</p>
+
+<div class="note">
+EAGLE 的训练不需要 target model 在线推理——只需离线收集 target model 的 hidden states 作为数据集。这让训练成本很低（只训练 1 层 Transformer + 1 个 Linear）。
+</div>
+
+<h3>3.4 验证：标准 Rejection Sampling</h3>
+
+<p>验证阶段和标准 speculative decoding 完全一致。Target model 一次前传处理 \(\gamma\) 个 draft token，逐个验证：</p>
+
+<div class="derivation">
+<div class="step">
+<span class="step-label">对每个位置 k (从 1 到 γ)：</span>
+\[\text{接受 } \hat{x}_k \text{ 的概率} = \min\left(1,\; \frac{p^t_k(\hat{x}_k)}{p^d_k(\hat{x}_k)}\right)\]
+<p>若 draft 给出的概率低于 target（draft 低估了该 token），\(\min\) 取 1，一定接受。<br>
+若 draft 过度自信（\(p^d > p^t\)），以 \(p^t/p^d\) 的概率接受——draft 越偏离 target 越容易被拒。</p>
+</div>
+
+<div class="step">
+<span class="step-label">一旦某个位置被拒绝：</span>
+<p>从修正分布中重新采样一个 token：\(x_k \sim \text{norm}(\max(0,\; p^t_k - p^d_k))\)，然后丢弃后续所有 draft token。</p>
+</div>
+
+<div class="step">
+<span class="step-label">全部通过的额外 bonus：</span>
+<p>如果 γ 个全部被接受，额外从 \(p^t_{\gamma+1}\) 采样一个 bonus token。</p>
+</div>
+</div>
+
+<!-- ═══════════ 性能分析 ═══════════ -->
+<h2>4. 性能分析：EAGLE 的优势与局限</h2>
+
+<h3>4.1 优势</h3>
+
+<table>
+<tr><th>方面</th><th>对比标准 spec decoding</th></tr>
+<tr><td>Draft 精度</td><td>在 feature space 预测，自相关性高 → acceptance rate 显著更高</td></tr>
+<tr><td>Draft 速度</td><td>只有 1 层 Transformer + 1 个 Linear → 每步延迟极低</td></tr>
+<tr><td>训练成本</td><td>只训练 draft head（~50M 参数），不需要从零训一个小 LM</td></tr>
+<tr><td>参数共享</td><td>LM head + embedding 与 target 共享 → 无额外显存占用</td></tr>
+</table>
+
+<h3>4.2 局限：串行瓶颈</h3>
+
+<div class="key-insight">
+<strong>EAGLE 的根本限制</strong>：draft 是 autoregressive 的。每一步的输入依赖上一步的输出：<br><br>
+\(T_{\text{draft}} = \gamma \times T_{\text{step}}\)<br><br>
+即使每步很快（~1ms），当 \(\gamma = 7\) 时仍需 7ms。在高吞吐场景下，这 7ms 是 target model 一次 prefill 的相当比例。<br><br>
+这正是后来 DFlash 和 DSpark 要解决的问题。
+</div>
+
+<h3>4.3 误差累积</h3>
+
+<p>多步 draft 中，position 1 用的是真实 \(\mathbf{f}_0\)，精度最高。后续位置用预测的 \(\hat{\mathbf{f}}\)，误差逐步放大：</p>
+
+<div class="math-block">
+<span class="label">Acceptance rate 随 position 衰减</span>
+\[c_k \approx c_1 \cdot \rho^{k-1}, \quad \rho < 1\]
+</div>
+
+<p>这个衰减是所有 autoregressive drafter 的通病。EAGLE2 将引入 tree verification 来缓解它（下一课）。</p>
+
+<!-- ═══════════ 小结 ═══════════ -->
+<h2>5. 小结</h2>
+
+<div class="key-insight">
+<strong>EAGLE 的三个核心贡献</strong>：<br>
+① 发现 feature space 比 token space 更容易预测（entropy 更低）<br>
+② 设计 fusion layer 将采样结果注入 feature（解决信息损失）<br>
+③ 共享 LM head 将 feature 预测转为 token 分布（零额外参数）<br><br>
+<strong>遗留问题</strong>：串行 draft → latency 线性增长，后续位置误差累积 → acceptance rate 衰减。
+</div>
+
+<table>
+<tr><th></th><th>标准 Spec Decoding</th><th>EAGLE</th></tr>
+<tr><td>Draft 建模空间</td><td>Token space</td><td>Feature space (hidden states)</td></tr>
+<tr><td>Draft model 类型</td><td>独立小 LM（完整模型）</td><td>嫁接在 target 上的 1 层 head</td></tr>
+<tr><td>参数量</td><td>数亿~数十亿</td><td>~50M（1 层 decoder + 1 Linear）</td></tr>
+<tr><td>LM head</td><td>独立训练</td><td>共享 target 的权重</td></tr>
+<tr><td>训练数据</td><td>通用语料</td><td>Target hidden states（离线收集）</td></tr>
+<tr><td>Acceptance rate (Vicuna-7B)</td><td>~0.5</td><td>~0.79</td></tr>
+<tr><td>Speedup (Vicuna-7B)</td><td>~1.8×</td><td>~3.0×</td></tr>
+</table>
+
+<!-- ═══════════ Quiz ═══════════ -->
+<h2>6. Quiz</h2>
+
+<div class="quiz" data-answer="2">
+  <h4>Q1: EAGLE 选择在 feature space 而非 token space 做 draft 的根本原因是？</h4>
+  <label><input type="radio" name="q1" value="1"> Feature space 维度更低，计算量更小</label>
+  <label><input type="radio" name="q1" value="2"> Hidden state 序列比 token 序列有更低的条件 entropy，更容易预测</label>
+  <label><input type="radio" name="q1" value="3"> Feature space 的 rejection sampling 不需要知道 draft 概率</label>
+  <div class="feedback correct">✓ 正确！EAGLE 的核心观察是 \(H(\mathbf{f}_{k+1} \mid \mathbf{f}_{\leq k}) \ll H(x_{k+1} \mid x_{\leq k})\)。Feature 序列的自相关性更高，单层 Transformer 就能准确预测。</div>
+  <div class="feedback incorrect">✗ Feature space 维度和 token space 维度实际相同（hidden dim ≈ vocab size 的数量级）。关键不是维度，而是序列的 smoothness / entropy。</div>
+</div>
+
+<div class="quiz" data-answer="1">
+  <h4>Q2: EAGLE 的 fusion layer 为什么必须拼接 token embedding \(\mathbf{e}(x_k)\)？</h4>
+  <label><input type="radio" name="q2" value="1"> Hidden state 编码的是 token 分布而非采样结果，拼接 embedding 注入实际选择</label>
+  <label><input type="radio" name="q2" value="2"> Token embedding 提供了位置编码信息，hidden state 缺乏位置感知</label>
+  <label><input type="radio" name="q2" value="3"> 拼接 embedding 是为了对齐 LM head 的输入维度，使其能复用</label>
+  <div class="feedback correct">✓ 正确！\(\mathbf{f}_k\) 代表「给定 context 的 next-token 分布」，不含「实际选了哪个」的信息。拼接 \(\mathbf{e}(x_k)\) 把 sampling 决策注入。</div>
+  <div class="feedback incorrect">✗ Hidden state 本身已含位置编码（通过 RoPE）。拼接 embedding 的目的不是补位置信息，也不是对齐维度。</div>
+</div>
+
+<div class="quiz" data-answer="3">
+  <h4>Q3: EAGLE 在多步 draft 中 acceptance rate 逐步衰减的根本原因是？</h4>
+  <label><input type="radio" name="q3" value="1"> 共享的 LM head 对远离 context 的位置泛化能力不足</label>
+  <label><input type="radio" name="q3" value="2"> 后续位置 KV cache 中缺少真实 target hidden states 的信息</label>
+  <label><input type="radio" name="q3" value="3"> 后续步骤用预测的 feature 代替真实 feature 输入，误差逐步累积</label>
+  <div class="feedback correct">✓ 正确！Position 1 用真实 \(\mathbf{f}_0\)，精度最高。后续步骤用 \(\hat{\mathbf{f}}\)，每步的预测误差会传播并放大到下一步。</div>
+  <div class="feedback incorrect">✗ LM head 对位置无感知（position-agnostic）。KV cache 包含前面所有步的 h。真正原因是 feature 的误差累积——用预测值代替真值的 error propagation。</div>
+</div>
+
+<div class="followup">
+<strong>💬 有疑问？</strong> 问我关于 feature uncertainty 的实验细节、EAGLE 训练的具体流程、或者 teacher forcing vs exposure bias 的权衡。下一课将讲 EAGLE2 如何用 tree verification 缓解 acceptance rate 衰减。
+</div>
+
+</body>
+</html>

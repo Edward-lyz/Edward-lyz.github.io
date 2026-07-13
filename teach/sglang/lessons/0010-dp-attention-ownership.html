@@ -6,8 +6,18 @@
 <title>第十课：DP Attention 的 request、KV 与 collective ownership</title>
 <link rel="stylesheet" href="../assets/style.css">
 <script defer src="../assets/quiz.js"></script>
+<link rel="stylesheet" href="/teach/site.css" data-teach-site-theme>
+<script src="/teach/site.js" data-teach-site-theme-script></script>
 </head>
 <body>
+<nav class="teach-site-nav" aria-label="站点导航" data-teach-site-nav>
+  <a class="teach-site-brand" href="/">lyz的博客</a>
+  <span class="teach-site-nav-links">
+    <a href="/文章/">文章</a>
+    <a href="/teach/" aria-current="page">课程</a>
+    <a href="https://github.com/Edward-lyz">GitHub</a>
+  </span>
+</nav>
 <h1>DP Attention 的 request、KV 与 collective ownership</h1>
 <p class="outcome">学完本课，你能追踪一个 DPA request 从 controller 路由、本地 attention/KV，到跨 TP world 的 MLP token gather，并解释空闲 rank 为什么仍要执行 IDLE batch。</p>
 

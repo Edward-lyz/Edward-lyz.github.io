@@ -125,10 +125,6 @@ pre code {
   font-size: 0.92rem;
 }
 
-.note::before {
-  content: '💡 ';
-}
-
 .key-insight {
   background: var(--accent-light);
   border-left: 3px solid var(--accent);

@@ -30,8 +30,18 @@
 </style>
 <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
 <script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<link rel="stylesheet" href="/teach/site.css" data-teach-site-theme>
+<script src="/teach/site.js" data-teach-site-theme-script></script>
 </head>
 <body>
+<nav class="teach-site-nav" aria-label="站点导航" data-teach-site-nav>
+  <a class="teach-site-brand" href="/">lyz的博客</a>
+  <span class="teach-site-nav-links">
+    <a href="/文章/">文章</a>
+    <a href="/teach/" aria-current="page">课程</a>
+    <a href="https://github.com/Edward-lyz">GitHub</a>
+  </span>
+</nav>
 <div class="nav">课 01 · <a href="0002-sglang-day0-enablement.html">课 02：SGLang Day-0 适配</a> · <a href="../reference/architecture-cheatsheet.html">架构速查卡</a> · <a href="../reference/glossary.html">术语表</a></div>
 
 <h1>GLM-5.2 架构与 IndexShare<br><small style="font-size:0.62em;color:#777;">DSA 之上的跨层索引复用 —— 你已知 DSA，本课只讲"增量"</small></h1>
@@ -53,9 +63,9 @@
 
 <table>
 <tr><th>增量</th><th>是什么</th><th>本课重点</th></tr>
-<tr><td><strong>IndexShare</strong></td><td>DSA 的 index 不再每层重算，而是<mark>每 4 层算一次、中间 3 层复用</mark></td><td>★ 主角</td></tr>
+<tr><td><strong>IndexShare</strong></td><td>DSA 的 index 不再每层重算，而是<strong>每 4 层算一次、中间 3 层复用</strong></td><td>★ 主角</td></tr>
 <tr><td>1M 原生 context</td><td>rope_theta=8M，非 YaRN/NTK 外推</td><td>顺带</td></tr>
-<tr><td>改进版 MTP</td><td>单 nextn 层，acceptance length +20%，且<mark>MTP 迭代复用同一份 index</mark></td><td>课 02 细讲</td></tr>
+<tr><td>改进版 MTP</td><td>单 nextn 层，acceptance length +20%，且<strong>MTP 迭代复用同一份 index</strong></td><td>课 02 细讲</td></tr>
 </table>
 
 <div class="key-insight"><strong>定位锚点</strong>：DSA 解决"单层内 attention 是 O(n²)"——选 top-2048。IndexShare 解决"<strong>每层都要重新选一次 top-2048 也很贵</strong>"——既然相邻层选出来的 token 高度重合，那就别每层都选。一句话：<strong>DSA 压缩"算哪些 token"，IndexShare 压缩"多久选一次 token"。</strong></div>
@@ -90,7 +100,7 @@ flowchart TD
     MOE --> OUT["→ 残差 → 下一层"]
 </div>
 
-<div class="deep-dive"><strong>读图要点</strong>：①<code>q_lora</code> 同时喂给主路径 q_b 和 indexer，省一次投影。②indexer 是 <strong>MQA</strong>（wk 只输出 128 维单头 key），所以打分便宜。③<code>SparseMLAOp</code> 的 head_dim=576 = 512 latent + 64 rope，是 MLA 的 <em>absorbed</em> 形式（不展开成 64×256）。④<mark>红色的 index 这一步，就是 IndexShare 要"跨层省掉"的对象。</mark></div>
+<div class="deep-dive"><strong>读图要点</strong>：①<code>q_lora</code> 同时喂给主路径 q_b 和 indexer，省一次投影。②indexer 是 <strong>MQA</strong>（wk 只输出 128 维单头 key），所以打分便宜。③<code>SparseMLAOp</code> 的 head_dim=576 = 512 latent + 64 rope，是 MLA 的 <em>absorbed</em> 形式（不展开成 64×256）。④<strong>红色的 index 这一步，就是 IndexShare 要"跨层省掉"的对象。</strong></div>
 
 <h2 id="p2">Part 2：IndexShare —— 本课主角</h2>
 
@@ -145,7 +155,7 @@ flowchart LR
 <tr><th>方法</th><th>单层内 indexer 粒度</th><th>跨层 index 频率</th><th>KV 形态</th></tr>
 <tr><td>DeepSeek-V3.2 <strong>DSA</strong></td><td>token-level，lightning indexer</td><td>每层重算</td><td>MLA 压缩 latent</td></tr>
 <tr><td>MiniMax-M3 <strong>MSA</strong></td><td>block-level，per-group selection</td><td>每层重算</td><td>full KV（稀疏计算）</td></tr>
-<tr><td><strong>GLM-5.2 IndexShare</strong></td><td>token-level（同 DSA）</td><td><mark>每 4 层重算</mark></td><td>MLA 压缩 latent</td></tr>
+<tr><td><strong>GLM-5.2 IndexShare</strong></td><td>token-level（同 DSA）</td><td><strong>每 4 层重算</strong></td><td>MLA 压缩 latent</td></tr>
 </table>
 
 <div class="compare"><strong>关键洞察</strong>：IndexShare 不和 DSA/MSA 竞争"怎么选 token"——它<strong>站在 DSA 之上</strong>，正交地砍掉"选 token"这个动作本身的频率。理论上 IndexShare 这层复用思想也能叠加到 MSA 上（MSA 的 block selection 同样在相邻层重合）。这就是为什么把它理解成"DSA 的一个工程优化层"而非"新的 attention 算法"才准确。</div>

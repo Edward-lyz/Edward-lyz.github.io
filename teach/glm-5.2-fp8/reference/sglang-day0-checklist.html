@@ -18,8 +18,18 @@
   .hot { color: #c62828; font-weight: bold; }
   @media print { body { max-width: 100%; font-size: 10.5px; } h2 { page-break-after: avoid; } table, pre { page-break-inside: avoid; } .nav, .footer { display: none; } }
 </style>
+<link rel="stylesheet" href="/teach/site.css" data-teach-site-theme>
+<script src="/teach/site.js" data-teach-site-theme-script></script>
 </head>
 <body>
+<nav class="teach-site-nav" aria-label="站点导航" data-teach-site-nav>
+  <a class="teach-site-brand" href="/">lyz的博客</a>
+  <span class="teach-site-nav-links">
+    <a href="/文章/">文章</a>
+    <a href="/teach/" aria-current="page">课程</a>
+    <a href="https://github.com/Edward-lyz">GitHub</a>
+  </span>
+</nav>
 <div class="nav"><a href="../lessons/0001-glm52-architecture-indexshare.html">课 01</a> · <a href="../lessons/0002-sglang-day0-enablement.html">课 02</a> · <a href="./architecture-cheatsheet.html">架构速查卡</a> · <a href="./glossary.html">术语表</a></div>
 
 <h1>GLM-5.2 上游 SGLang Day-0 机制拆解</h1>

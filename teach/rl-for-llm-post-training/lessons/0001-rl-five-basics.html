@@ -6,8 +6,18 @@
 <title>Lesson 01 — RL 的五个基本概念</title>
 <link rel="stylesheet" href="../assets/rl-course.css">
 <script src="../assets/quiz.js" defer></script>
+<link rel="stylesheet" href="/teach/site.css" data-teach-site-theme>
+<script src="/teach/site.js" data-teach-site-theme-script></script>
 </head>
 <body>
+<nav class="teach-site-nav" aria-label="站点导航" data-teach-site-nav>
+  <a class="teach-site-brand" href="/">lyz的博客</a>
+  <span class="teach-site-nav-links">
+    <a href="/文章/">文章</a>
+    <a href="/teach/" aria-current="page">课程</a>
+    <a href="https://github.com/Edward-lyz">GitHub</a>
+  </span>
+</nav>
 
 <p class="lesson-number">Lesson 01</p>
 <h1>RL 的五个基本概念</h1>
@@ -221,7 +231,7 @@ Policy Gradient 的梯度是 R · ∇ log π(采样结果) — 模型必须自�
 
 <!-- ====== QUIZ ====== -->
 <div class="quiz-container">
-<h3>检验理解 ✍️</h3>
+<h3>检验理解</h3>
 <p>模型当前策略是 π(A)=0.9, π(B)=0.1。正确答案是 B（reward=1）, A 是错的（reward=0）。
 使用 policy gradient 训练，大多数情况下梯度更新会怎样？</p>
 
@@ -254,7 +264,7 @@ Policy Gradient 的梯度是 R · ∇ log π(采样结果) — 模型必须自�
 
 <!-- ====== ASK TEACHER ====== -->
 <div class="ask-teacher">
-<strong>💬 有疑问？</strong> 任何公式或概念不清楚的地方，直接问我。特别是 log-derivative trick 那步如果没跟上，我可以用更多例子解释。
+<strong>有疑问？</strong> 任何公式或概念不清楚的地方，直接问我。特别是 log-derivative trick 那步如果没跟上，我可以用更多例子解释。
 </div>
 
 <div class="nav-links">

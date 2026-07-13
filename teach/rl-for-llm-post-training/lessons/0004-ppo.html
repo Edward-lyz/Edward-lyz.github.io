@@ -6,8 +6,18 @@
 <title>Lesson 04 — PPO: 防止更新过猛</title>
 <link rel="stylesheet" href="../assets/rl-course.css">
 <script src="../assets/quiz.js" defer></script>
+<link rel="stylesheet" href="/teach/site.css" data-teach-site-theme>
+<script src="/teach/site.js" data-teach-site-theme-script></script>
 </head>
 <body>
+<nav class="teach-site-nav" aria-label="站点导航" data-teach-site-nav>
+  <a class="teach-site-brand" href="/">lyz的博客</a>
+  <span class="teach-site-nav-links">
+    <a href="/文章/">文章</a>
+    <a href="/teach/" aria-current="page">课程</a>
+    <a href="https://github.com/Edward-lyz">GitHub</a>
+  </span>
+</nav>
 
 <p class="lesson-number">Lesson 04</p>
 <h1>PPO：防止更新过猛</h1>
@@ -173,7 +183,7 @@ L<sub>critic</sub> = (1/N) Σ ( V<sub>φ</sub>(s<sub>t</sub>) − G<sub>t</sub> 
 
 <!-- ====== QUIZ ====== -->
 <div class="quiz-container">
-<h3>检验理解 ✍️</h3>
+<h3>检验理解</h3>
 <p>ε=0.2。某个动作的 advantage A=+3（好动作）。新策略对它的概率是旧策略的 1.5 倍（ρ=1.5）。PPO 会怎么处理？</p>
 
 <div class="quiz-option" data-correct="false" data-explanation="ρ=1.5 超过了 1+ε=1.2 的上界，clip 会生效。">正常用 ρ×A = 4.5 作为 objective，因为 A>0 就该大力推</div>
@@ -201,7 +211,7 @@ L<sub>critic</sub> = (1/N) Σ ( V<sub>φ</sub>(s<sub>t</sub>) − G<sub>t</sub> 
 <p><a href="https://arxiv.org/abs/1707.06347">PPO 原始论文 (Schulman et al. 2017)</a>：只需读 Section 3 (Clipped Surrogate Objective)，这 2 页就是 PPO 的全部核心。</p>
 
 <div class="ask-teacher">
-<strong>💬 有疑问？</strong> clip 的四种情况如果还不直觉，告诉我，我可以画一个 ρ-A 平面的图来展示哪些区域被截断。
+<strong>有疑问？</strong> clip 的四种情况如果还不直觉，告诉我，我可以画一个 ρ-A 平面的图来展示哪些区域被截断。
 </div>
 
 <div class="nav-links">

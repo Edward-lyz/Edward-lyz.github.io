@@ -6,8 +6,18 @@
 <title>Lesson 03 — 方差、Baseline 与 Advantage</title>
 <link rel="stylesheet" href="../assets/rl-course.css">
 <script src="../assets/quiz.js" defer></script>
+<link rel="stylesheet" href="/teach/site.css" data-teach-site-theme>
+<script src="/teach/site.js" data-teach-site-theme-script></script>
 </head>
 <body>
+<nav class="teach-site-nav" aria-label="站点导航" data-teach-site-nav>
+  <a class="teach-site-brand" href="/">lyz的博客</a>
+  <span class="teach-site-nav-links">
+    <a href="/文章/">文章</a>
+    <a href="/teach/" aria-current="page">课程</a>
+    <a href="https://github.com/Edward-lyz">GitHub</a>
+  </span>
+</nav>
 
 <p class="lesson-number">Lesson 03</p>
 <h1>方差、Baseline 与 Advantage</h1>
@@ -189,7 +199,7 @@ A(直接 return) = 0.2 − 0.4 = −0.2  → 减小这个 token 的概率</code>
 
 <!-- ====== QUIZ ====== -->
 <div class="quiz-container">
-<h3>检验理解 ✍️</h3>
+<h3>检验理解</h3>
 <p>模型在某个状态的 V(s) = 0.6。它选了一个动作后实际拿到的 return 是 0.9。这个动作的 advantage 估计值大约是多少？模型会怎么更新？</p>
 
 <div class="quiz-option" data-correct="true" data-explanation="正确。A ≈ 0.9 − 0.6 = 0.3 > 0，所以增大该动作的概率。">A ≈ +0.3，增大该动作的概率</div>
@@ -217,7 +227,7 @@ A(直接 return) = 0.2 − 0.4 = −0.2  → 减小这个 token 的概率</code>
 <p><a href="https://spinningup.openai.com/en/latest/spinningup/rl_intro3.html">Spinning Up: Intro to Policy Optimization</a> §"Baselines in Policy Gradients" 和 §"Generalized Advantage Estimation" 是对本课内容的代码级展开。</p>
 
 <div class="ask-teacher">
-<strong>💬 有疑问？</strong> 「为什么减 baseline 不改变梯度」那个证明如果跳得太快，告诉我，我可以一步一步展开。V 和 Q 的区别也可以再举例。
+<strong>有疑问？</strong> 「为什么减 baseline 不改变梯度」那个证明如果跳得太快，告诉我，我可以一步一步展开。V 和 Q 的区别也可以再举例。
 </div>
 
 <div class="nav-links">

@@ -1,0 +1,293 @@
+:root {
+  --text: #1f1f1d;
+  --ink: #1f1f1d;
+  --bg: #fafaf9;
+  --paper: #fafaf9;
+  --muted: #666661;
+  --border: #ddddda;
+  --rule: #ddddda;
+  --accent: #5f5248;
+  --accent-light: #f1efec;
+  --accent-soft: #f1efec;
+  --highlight: #f3f3f1;
+  --code-bg: #f1f1ef;
+  --math-bg: #f5f5f3;
+  --note-bg: #f5f5f3;
+  --note-border: #b9b5b0;
+  --surface: #ffffff;
+  color-scheme: light;
+}
+
+html.dark {
+  --text: #ede5dc;
+  --ink: #ede5dc;
+  --bg: #161616;
+  --paper: #161616;
+  --muted: #aaa29b;
+  --border: #393532;
+  --rule: #393532;
+  --accent: #b4977f;
+  --accent-light: #272321;
+  --accent-soft: #272321;
+  --highlight: #222222;
+  --code-bg: #222222;
+  --math-bg: #1d1d1d;
+  --note-bg: #1d1d1d;
+  --note-border: #625b55;
+  --surface: #1a1a1a;
+  color-scheme: dark;
+}
+
+html {
+  background: var(--bg) !important;
+  color: var(--text) !important;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif !important;
+  font-size: 16px !important;
+  line-height: 1.8 !important;
+}
+
+body {
+  max-width: 820px !important;
+  margin: 0 auto !important;
+  padding: 0 24px 64px !important;
+  background: var(--bg) !important;
+  color: var(--text) !important;
+  font-family: inherit !important;
+}
+
+.teach-site-nav {
+  display: flex;
+  min-height: 64px;
+  margin-bottom: 46px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-size: 14px;
+}
+
+.teach-site-nav a {
+  border: 0 !important;
+  color: inherit !important;
+  text-decoration: none !important;
+}
+
+.teach-site-nav a:hover {
+  color: var(--accent) !important;
+}
+
+.teach-site-brand {
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.teach-site-nav-links {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  color: var(--muted);
+}
+
+.teach-site-nav-links [aria-current='page'] {
+  color: var(--text) !important;
+  font-weight: 600;
+}
+
+.teach-site-nav + .nav {
+  display: none !important;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  color: var(--text) !important;
+  font-family: inherit !important;
+  font-style: normal !important;
+  line-height: 1.3 !important;
+}
+
+h1 {
+  margin-top: 0 !important;
+  margin-bottom: 18px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  font-size: clamp(2rem, 5vw, 2.5rem) !important;
+  font-weight: 650 !important;
+  letter-spacing: -0.035em !important;
+}
+
+h2 {
+  margin-top: 52px !important;
+  margin-bottom: 14px !important;
+  padding: 18px 0 0 !important;
+  border-top: 1px solid var(--border) !important;
+  border-right: 0 !important;
+  border-bottom: 0 !important;
+  border-left: 0 !important;
+  font-size: 1.45rem !important;
+  font-weight: 620 !important;
+  letter-spacing: -0.02em !important;
+}
+
+h3 {
+  margin-top: 30px !important;
+  margin-bottom: 10px !important;
+  font-size: 1.15rem !important;
+  font-weight: 620 !important;
+}
+
+a {
+  color: var(--accent) !important;
+  text-underline-offset: 0.18em;
+}
+
+code,
+pre,
+.formula,
+.formula-box,
+.flow-diagram,
+.file,
+.param,
+.role-tools {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace !important;
+}
+
+code {
+  background: var(--code-bg) !important;
+  border-radius: 2px !important;
+}
+
+pre,
+.formula-box,
+.flow-diagram {
+  border: 0 !important;
+  border-radius: 2px !important;
+  background: var(--code-bg) !important;
+  box-shadow: none !important;
+}
+
+table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse !important;
+}
+
+th {
+  background: var(--code-bg) !important;
+}
+
+th,
+td {
+  border-color: var(--border) !important;
+}
+
+.key-insight,
+.deep-dive,
+.warning,
+.compare,
+.trick,
+.code-note,
+.danger-box,
+.success-box,
+.note,
+.invariant,
+.analogy,
+.ask-teacher,
+.src {
+  padding: 14px 16px !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 2px !important;
+  background: var(--surface) !important;
+  box-shadow: none !important;
+  color: var(--text) !important;
+}
+
+.key-insight::before,
+.danger-box::before,
+.success-box::before,
+.note::before {
+  content: none !important;
+}
+
+.toc,
+.terms,
+.phase,
+.role-card,
+.layer-card,
+.comparison-card,
+.quiz,
+.quiz-container,
+.followup {
+  border: 1px solid var(--border) !important;
+  border-radius: 2px !important;
+  background: var(--surface) !important;
+  box-shadow: none !important;
+}
+
+.quiz h3,
+.quiz h4,
+.quiz-container h3 {
+  color: var(--text) !important;
+}
+
+.quiz label,
+.quiz-option,
+.quiz-options li {
+  border-radius: 2px !important;
+}
+
+mark {
+  padding: 0 !important;
+  background: transparent !important;
+  color: inherit !important;
+  font-weight: 650;
+}
+
+html.dark .quiz-option,
+html.dark .quiz-options li,
+html.dark details,
+html.dark .runtime-flow .step {
+  background: var(--surface) !important;
+  color: var(--text) !important;
+}
+
+html.dark .quiz-option:hover,
+html.dark .quiz-options li:hover {
+  background: var(--code-bg) !important;
+}
+
+iframe,
+img,
+svg,
+.mermaid {
+  max-width: 100%;
+}
+
+@media (max-width: 640px) {
+  body {
+    padding: 0 18px 48px !important;
+  }
+
+  .teach-site-nav {
+    min-height: 58px;
+    margin-bottom: 34px;
+  }
+
+  .teach-site-nav-links {
+    gap: 14px;
+  }
+
+  .teach-site-nav-links a:last-child {
+    display: none;
+  }
+}
+
+@media print {
+  .teach-site-nav {
+    display: none;
+  }
+}

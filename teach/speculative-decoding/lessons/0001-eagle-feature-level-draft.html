@@ -10,8 +10,18 @@
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
   onload="renderMathInElement(document.body, {delimiters:[{left:'\\[',right:'\\]',display:true},{left:'\\(',right:'\\)',display:false}]})"></script>
 <script defer src="../assets/quiz.js"></script>
+<link rel="stylesheet" href="/teach/site.css" data-teach-site-theme>
+<script src="/teach/site.js" data-teach-site-theme-script></script>
 </head>
 <body>
+<nav class="teach-site-nav" aria-label="站点导航" data-teach-site-nav>
+  <a class="teach-site-brand" href="/">lyz的博客</a>
+  <span class="teach-site-nav-links">
+    <a href="/文章/">文章</a>
+    <a href="/teach/" aria-current="page">课程</a>
+    <a href="https://github.com/Edward-lyz">GitHub</a>
+  </span>
+</nav>
 
 <h1>EAGLE：Feature-Level Autoregressive Draft</h1>
 
@@ -278,7 +288,7 @@ EAGLE 的训练不需要 target model 在线推理——只需离线收集 targe
 </div>
 
 <div class="followup">
-<strong>💬 有疑问？</strong> 问我关于 feature uncertainty 的实验细节、EAGLE 训练的具体流程、或者 teacher forcing vs exposure bias 的权衡。下一课将讲 EAGLE2 如何用 tree verification 缓解 acceptance rate 衰减。
+<strong>有疑问？</strong> 问我关于 feature uncertainty 的实验细节、EAGLE 训练的具体流程、或者 teacher forcing vs exposure bias 的权衡。下一课将讲 EAGLE2 如何用 tree verification 缓解 acceptance rate 衰减。
 </div>
 
 </body>

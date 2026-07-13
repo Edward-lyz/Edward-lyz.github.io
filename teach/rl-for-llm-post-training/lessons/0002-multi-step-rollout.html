@@ -6,8 +6,18 @@
 <title>Lesson 02 — 多步决策与 Rollout</title>
 <link rel="stylesheet" href="../assets/rl-course.css">
 <script src="../assets/quiz.js" defer></script>
+<link rel="stylesheet" href="/teach/site.css" data-teach-site-theme>
+<script src="/teach/site.js" data-teach-site-theme-script></script>
 </head>
 <body>
+<nav class="teach-site-nav" aria-label="站点导航" data-teach-site-nav>
+  <a class="teach-site-brand" href="/">lyz的博客</a>
+  <span class="teach-site-nav-links">
+    <a href="/文章/">文章</a>
+    <a href="/teach/" aria-current="page">课程</a>
+    <a href="https://github.com/Edward-lyz">GitHub</a>
+  </span>
+</nav>
 
 <p class="lesson-number">Lesson 02</p>
 <h1>多步决策与 Rollout</h1>
@@ -153,7 +163,7 @@ token 500: ∇log π(y₅₀₀) × 1  ← 可能只是收尾</code></pre>
 
 <!-- ====== QUIZ ====== -->
 <div class="quiz-container">
-<h3>检验理解 ✍️</h3>
+<h3>检验理解</h3>
 <p>假设一个 LLM 对同一个 prompt 生成了 4 条 rollout，reward 分别是 [0, 0, 0, 0]。此时 policy gradient 的估计值是多少？</p>
 
 <div class="quiz-option" data-correct="true" data-explanation="正确。R=0 时，R·∇log π = 0。四条都是零，平均还是零。模型得不到任何方向信息。">零向量，模型从这批数据学不到任何方向</div>
@@ -182,7 +192,7 @@ token 500: ∇log π(y₅₀₀) × 1  ← 可能只是收尾</code></pre>
 <p><a href="https://spinningup.openai.com/en/latest/spinningup/rl_intro3.html">Spinning Up: Intro to Policy Optimization</a> §"Don't Let the Past Distract You" 解释了为什么时刻 t 的梯度只应该乘以 t 之后的 reward，这正是 credit assignment 的第一步改进。</p>
 
 <div class="ask-teacher">
-<strong>💬 有疑问？</strong> 如果「序列概率=条件概率乘积」或「为什么全零 reward 导致零梯度」这些点不清楚，告诉我，我用更多例子展开。
+<strong>有疑问？</strong> 如果「序列概率=条件概率乘积」或「为什么全零 reward 导致零梯度」这些点不清楚，告诉我，我用更多例子展开。
 </div>
 
 <div class="nav-links">

@@ -6,8 +6,18 @@
 <title>Lesson 05 — GRPO: 不需要 Critic 的 RL</title>
 <link rel="stylesheet" href="../assets/rl-course.css">
 <script src="../assets/quiz.js" defer></script>
+<link rel="stylesheet" href="/teach/site.css" data-teach-site-theme>
+<script src="/teach/site.js" data-teach-site-theme-script></script>
 </head>
 <body>
+<nav class="teach-site-nav" aria-label="站点导航" data-teach-site-nav>
+  <a class="teach-site-brand" href="/">lyz的博客</a>
+  <span class="teach-site-nav-links">
+    <a href="/文章/">文章</a>
+    <a href="/teach/" aria-current="page">课程</a>
+    <a href="https://github.com/Edward-lyz">GitHub</a>
+  </span>
+</nav>
 
 <p class="lesson-number">Lesson 05</p>
 <h1>GRPO：不需要 Critic 的 RL</h1>
@@ -179,7 +189,7 @@ elif 任务长 or 成功率极低 or 需要 token-level 信号:
 
 <!-- ====== QUIZ ====== -->
 <div class="quiz-container">
-<h3>检验理解 ✍️</h3>
+<h3>检验理解</h3>
 <p>同一 prompt 生成 8 条 rollout，reward 分别是 [1, 1, 1, 1, 1, 1, 1, 1]（全部成功）。GRPO 的 advantage 是多少？模型能学到什么？</p>
 
 <div class="quiz-option" data-correct="true" data-explanation="正确。所有 r_i = r̄ = 1，所以 (r_i − r̄) = 0。全成功时 GRPO 也学不到东西——没有对比信号。">Advantage 全为零，模型学不到区分好坏的信号</div>
@@ -207,7 +217,7 @@ elif 任务长 or 成功率极低 or 需要 token-level 信号:
 <p><a href="https://arxiv.org/html/2402.03300v3">DeepSeekMath (2024)</a> Section 3.2 是 GRPO 的首次正式描述，只有 2 页，非常清晰。</p>
 
 <div class="ask-teacher">
-<strong>💬 有疑问？</strong> GRPO 和 PPO 的关系可以用更多对比例子展开。或者如果「全失败时梯度为零」不够直觉，告诉我。
+<strong>有疑问？</strong> GRPO 和 PPO 的关系可以用更多对比例子展开。或者如果「全失败时梯度为零」不够直觉，告诉我。
 </div>
 
 <div class="nav-links">

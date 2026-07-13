@@ -20,9 +20,8 @@
   --c128-dark: #6340a0;
   --blue: #2f6df6;
   --danger: #d54b4b;
-  --shadow: 0 18px 55px rgba(26, 34, 48, 0.12);
   font-family:
-    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
     sans-serif;
 }
 
@@ -33,9 +32,7 @@
 body {
   margin: 0;
   color: var(--ink);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.75), rgba(246, 247, 249, 0.96)),
-    var(--bg);
+  background: var(--bg);
 }
 
 button,
@@ -55,8 +52,7 @@ input {
 .stage-panel {
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 8px;
-  box-shadow: var(--shadow);
+  border-radius: 4px;
 }
 
 .stage-panel {
@@ -75,15 +71,6 @@ input {
   border-bottom: 1px solid var(--line);
 }
 
-.kicker {
-  margin: 0 0 5px;
-  color: var(--blue);
-  font-size: 12px;
-  font-weight: 750;
-  text-transform: uppercase;
-  letter-spacing: 0;
-}
-
 h1,
 h2,
 h3,
@@ -92,10 +79,16 @@ p {
 }
 
 h1 {
-  margin-bottom: 0;
+  margin-bottom: 4px;
   font-size: 28px;
   line-height: 1.12;
   letter-spacing: 0;
+}
+
+.context {
+  margin-bottom: 0;
+  color: var(--muted);
+  font-size: 13px;
 }
 
 h2 {
@@ -151,7 +144,7 @@ h3 {
   width: 100%;
   height: 100%;
   min-height: 0;
-  background: linear-gradient(180deg, #ffffff 0%, #fbfcff 100%);
+  background: #ffffff;
 }
 
 .controls {
@@ -407,8 +400,8 @@ output {
       <section class="stage-panel" aria-label="ShadowRadix 动态图">
         <header class="titlebar">
           <div>
-            <p class="kicker">DeepSeek-V4 Hybrid Attention</p>
             <h1>ShadowRadix: 一个 source，多套 shadow</h1>
+            <p class="context">DeepSeek-V4 Hybrid Attention</p>
           </div>
           <div class="params" aria-label="真实参数">
             <span>source=1024</span>

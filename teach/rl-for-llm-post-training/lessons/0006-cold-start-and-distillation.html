@@ -6,8 +6,18 @@
 <title>Lesson 06 — 冷启动、蒸馏与 RL 的因果关系</title>
 <link rel="stylesheet" href="../assets/rl-course.css">
 <script src="../assets/quiz.js" defer></script>
+<link rel="stylesheet" href="/teach/site.css" data-teach-site-theme>
+<script src="/teach/site.js" data-teach-site-theme-script></script>
 </head>
 <body>
+<nav class="teach-site-nav" aria-label="站点导航" data-teach-site-nav>
+  <a class="teach-site-brand" href="/">lyz的博客</a>
+  <span class="teach-site-nav-links">
+    <a href="/文章/">文章</a>
+    <a href="/teach/" aria-current="page">课程</a>
+    <a href="https://github.com/Edward-lyz">GitHub</a>
+  </span>
+</nav>
 
 <p class="lesson-number">Lesson 06</p>
 <h1>冷启动、蒸馏与 RL 的因果关系</h1>
@@ -225,7 +235,7 @@ PPO / GRPO       → 调整动作概率
 
 <!-- ====== QUIZ ====== -->
 <div class="quiz-container">
-<h3>检验理解 ✍️</h3>
+<h3>检验理解</h3>
 <p>同一个 prompt 生成 8 条 rollout，8 条全部失败（reward=0）。如果改用一条正确的教师轨迹做 SFT，情况有何不同？</p>
 
 <div class="quiz-option" data-correct="true" data-explanation="正确。8 条全失败时 GRPO/PG 梯度为零。但 SFT 对教师轨迹中的每个 token 都有明确梯度 ∇log π(教师token)，不依赖模型自己的采样结果。">GRPO 梯度为零因为没有对比信号；SFT 仍有明确的逐 token 梯度因为不依赖采样</div>
@@ -250,12 +260,12 @@ Lesson 06: 冷启动提高成功率 → 路径依赖 → OPD 在 RL 后仍有用
 <p><a href="https://z.ai/blog/glm-5.2">GLM-5.2 技术博客</a> — 现在你有足够基础读懂其中关于 critic-based PPO 和 OPD 的段落了。重点看 "Long-Horizon Agent RL" 和 "On-Policy Distillation" 这两部分。</p>
 
 <div class="ask-teacher">
-<strong>💬 有疑问？</strong> 这六课的任何内容都可以继续深入。如果你想动手实践，我可以设计一个用 TRL 库跑 GRPO 训练的实操课。
+<strong>有疑问？</strong> 这六课的任何内容都可以继续深入。如果你想动手实践，我可以设计一个用 TRL 库跑 GRPO 训练的实操课。
 </div>
 
 <div class="nav-links">
 <a href="0005-grpo.html">← 上一课：GRPO</a>
-<span>🎓 基础课程完成</span>
+<span>基础课程完成</span>
 </div>
 
 </body>

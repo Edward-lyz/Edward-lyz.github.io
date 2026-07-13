@@ -151,7 +151,6 @@ def write_home_page(dest_dir: Path, articles: list[ArticleInfo]) -> None:
         "---",
         "",
         '<div class="home-intro">',
-        '<p class="home-kicker">lyz的博客</p>',
         '<h1 class="home-title">AI Infra 与工程笔记</h1>',
         '<p class="home-lead">无限进步。这里整理推理引擎、CUDA 算子、系统工程和 AI 时代的思考，重点保留可复用的工程经验和长文笔记。</p>',
         '<p class="home-links"><a href="/文章/">查看全部文章</a> · <a href="https://github.com/Edward-lyz">GitHub</a></p>',

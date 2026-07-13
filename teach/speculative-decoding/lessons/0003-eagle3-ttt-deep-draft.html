@@ -10,8 +10,18 @@
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
   onload="renderMathInElement(document.body, {delimiters:[{left:'\\[',right:'\\]',display:true},{left:'\\(',right:'\\)',display:false}]})"></script>
 <script defer src="../assets/quiz.js"></script>
+<link rel="stylesheet" href="/teach/site.css" data-teach-site-theme>
+<script src="/teach/site.js" data-teach-site-theme-script></script>
 </head>
 <body>
+<nav class="teach-site-nav" aria-label="站点导航" data-teach-site-nav>
+  <a class="teach-site-brand" href="/">lyz的博客</a>
+  <span class="teach-site-nav-links">
+    <a href="/文章/">文章</a>
+    <a href="/teach/" aria-current="page">课程</a>
+    <a href="https://github.com/Edward-lyz">GitHub</a>
+  </span>
+</nav>
 
 <h1>EAGLE3：Training-Time Test (TTT) + Deep Draft</h1>
 
@@ -307,7 +317,7 @@ DSpark 的并行 backbone 彻底消除了这个串行依赖——用 O(1) 前传
 </div>
 
 <div class="followup">
-<strong>💬 有疑问？</strong> 问我关于 TTT 的内存开销分析、SpecForge-style RoPE offset 的细节、或 EAGLE3 vs DSpark 在不同场景下的 trade-off。至此 EAGLE 系列三节课完成——回到 <a href="0005-dspark-semi-autoregressive.html">Lesson 05</a> 重新阅读 DSpark 时，你会更清楚它每个设计决策针对的是 EAGLE3 的哪个瓶颈。
+<strong>有疑问？</strong> 问我关于 TTT 的内存开销分析、SpecForge-style RoPE offset 的细节、或 EAGLE3 vs DSpark 在不同场景下的 trade-off。至此 EAGLE 系列三节课完成——回到 <a href="0005-dspark-semi-autoregressive.html">Lesson 05</a> 重新阅读 DSpark 时，你会更清楚它每个设计决策针对的是 EAGLE3 的哪个瓶颈。
 </div>
 
 </body>

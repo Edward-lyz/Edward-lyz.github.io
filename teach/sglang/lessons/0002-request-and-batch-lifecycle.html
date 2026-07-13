@@ -6,8 +6,18 @@
 <title>第二课：Req 与 ScheduleBatch 的双重生命周期</title>
 <link rel="stylesheet" href="../assets/style.css">
 <script defer src="../assets/quiz.js"></script>
+<link rel="stylesheet" href="/teach/site.css" data-teach-site-theme>
+<script src="/teach/site.js" data-teach-site-theme-script></script>
 </head>
 <body>
+<nav class="teach-site-nav" aria-label="站点导航" data-teach-site-nav>
+  <a class="teach-site-brand" href="/">lyz的博客</a>
+  <span class="teach-site-nav-links">
+    <a href="/文章/">文章</a>
+    <a href="/teach/" aria-current="page">课程</a>
+    <a href="https://github.com/Edward-lyz">GitHub</a>
+  </span>
+</nav>
 <h1>Req 与 ScheduleBatch 的双重生命周期</h1>
 <p class="outcome">学完本课，你能拿任意 request id，判断它当前属于 waiting、extend、running decode、finished 还是 retracted，并指出状态保存在哪个对象中。</p>
 

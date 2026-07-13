@@ -53,7 +53,7 @@
 </ul>
 </div>
 
-<p class="citation">代码基准：社区上游 <span class="file">PUBLIC_REPO/sglang</span>，commit <code>b8a73bfba0</code>（2026-06-16）。所有 file:line 经实际读取核对。与百度 <code>aiak_sglang</code> fork 的对比：fork 里 <code>GlmMoeDsa</code> / <code>index_share</code> 全部零匹配——<strong>day-0 的活，上游已经合入了</strong>，本课就拆这份真实实现。</p>
+<p class="citation">代码基准：社区上游 <a href="https://github.com/sgl-project/sglang">sgl-project/sglang</a>，commit <code>b8a73bfba0</code>（2026-06-16）。所有 file:line 经实际读取核对。与百度 <code>aiak_sglang</code> fork 的对比：fork 里 <code>GlmMoeDsa</code> / <code>index_share</code> 全部零匹配——<strong>day-0 的活，上游已经合入了</strong>，本课就拆这份真实实现。</p>
 
 <h2 id="p0">Part 0：重要前提 —— 上游已经做完了</h2>
 
@@ -320,13 +320,13 @@ if forward_batch.reuse_mtp_topk_indices:
 
 <div class="deep-dive" style="margin-top:2em;">
 <strong>下一步</strong><br>
-① <strong>动手</strong>：在 <span class="file">PUBLIC_REPO/sglang</span> 读完整的 <code>forward_absorb_prepare</code>（forward_mla.py:240-296）+ 层循环（deepseek_v2.py:2477-2504），把 <code>prev_topk_indices</code> 的传递在脑子里走一遍。这是本课最值得亲手追的一段。<br>
+① <strong>动手</strong>：在 <a href="https://github.com/sgl-project/sglang">sgl-project/sglang</a> 读完整的 <code>forward_absorb_prepare</code>（forward_mla.py:240-296）+ 层循环（deepseek_v2.py:2477-2504），把 <code>prev_topk_indices</code> 的传递在脑子里走一遍。这是本课最值得亲手追的一段。<br>
 ② <strong>给 fork 落地</strong>：对照 <a href="../reference/sglang-day0-checklist.html">Day-0 拆解卡</a>，确认 <code>aiak_sglang</code> 缺哪些 commit，规划 cherry-pick。<br>
 ③ <strong>主读物</strong>：arXiv:2603.12201 <em>IndexCache</em>，看论文怎么论证跨层复用的质量安全性——和你刚读到的 <code>skip_topk</code> 实现对照。<br>
 ④ <strong>随时问我</strong>：比如"TBO 双批重叠为什么会丢 topk_indices、上游怎么补的""dsa 后端的 forward_extend/decode 怎么消费这份 index""CP（context parallel）切分下 index 如何对齐"——这些是把这套机制吃到底的真问题。
 </div>
 
-<div class="footer">课 02 / GLM-5.2-FP8 教学 · file:line 源自 PUBLIC_REPO/sglang @b8a73bfba0 实证 · 配套 <a href="../reference/sglang-day0-checklist.html">Day-0 拆解卡</a> 与 <a href="../reference/glossary.html">术语表</a></div>
+<div class="footer">课 02 / GLM-5.2-FP8 教学 · file:line 源自 sgl-project/sglang @b8a73bfba0 实证 · 配套 <a href="../reference/sglang-day0-checklist.html">Day-0 拆解卡</a> 与 <a href="../reference/glossary.html">术语表</a></div>
 
 
 

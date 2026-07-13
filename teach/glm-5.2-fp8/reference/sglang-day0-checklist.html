@@ -23,7 +23,7 @@
 <div class="nav"><a href="../lessons/0001-glm52-architecture-indexshare.html">课 01</a> · <a href="../lessons/0002-sglang-day0-enablement.html">课 02</a> · <a href="./architecture-cheatsheet.html">架构速查卡</a> · <a href="./glossary.html">术语表</a></div>
 
 <h1>GLM-5.2 上游 SGLang Day-0 机制拆解</h1>
-<p style="font-size:0.84em;color:#555;">基准：<span class="file">PUBLIC_REPO/sglang @b8a73bfba0</span>（2026-06-16）。GLM-5.2 在上游<strong>已支持</strong>，本卡是其真实机制的压缩；末尾给出 <code>aiak_sglang</code> fork 的 cherry-pick 清单。</p>
+<p style="font-size:0.84em;color:#555;">基准：<a href="https://github.com/sgl-project/sglang">sgl-project/sglang</a> @b8a73bfba0（2026-06-16）。GLM-5.2 在上游<strong>已支持</strong>，本卡是其真实机制的压缩；末尾给出 <code>aiak_sglang</code> fork 的 cherry-pick 清单。</p>
 
 <h2>A. 8 个 trick（上游怎么做到"零新文件"）</h2>
 <table>
@@ -80,6 +80,6 @@ L0,1,2: skip=F(自算) | L3,4,5: skip=T(复用L2) | L6: skip=F(重算) | L7,8,9:
 7. eagle/standalone worker 的 index_share_for_mtp_iteration
 验证: 先跑非 MTP / 单 batch decode+prefill，确认 dsa 后端激活、index 不报 >topk</pre>
 
-<div class="footer">Day-0 拆解卡 · 源自 PUBLIC_REPO/sglang @b8a73bfba0 代码实证 · 配合 <a href="../lessons/0002-sglang-day0-enablement.html">课 02</a></div>
+<div class="footer">Day-0 拆解卡 · 源自 sgl-project/sglang @b8a73bfba0 代码实证 · 配合 <a href="../lessons/0002-sglang-day0-enablement.html">课 02</a></div>
 </body>
 </html>
